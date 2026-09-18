@@ -93,19 +93,27 @@ class DealScannerService : AccessibilityService() {
             return
         }
 
-        addLog("🎯 تم الدخول لصفحة العروض، جاري المسح...")
-        tapNodeCoordinate(dealsNode) 
+        addLog("🎯 تم الدخول لصفحة العروض، جاري المسح والإضافة...")
+        clickNodeSafely(dealsNode) 
         Thread.sleep(6000)
 
-        val allNodes = mutableListOf<NodeData>()
+        val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
+        val foundDeals = mutableListOf<String>()
+        val processedProducts = mutableSetOf<String>()
         var previousTextCount = 0
         var emptyScrolls = 0
         var totalScrolls = 0
         
+        // التعديل الأهم: مسح وتحليل كل صفحة ظاهرة وإضافة منتجاتها للسلة "قبل" السحب التالي
         while (totalScrolls < 100) {
-            extractNodes(rootInActiveWindow, allNodes)
-            val currentTextCount = allNodes.map { it.text }.distinct().size
+            val visibleNodes = mutableListOf<NodeData>()
+            extractNodes(rootInActiveWindow, visibleNodes)
             
+            val currentTextCount = visibleNodes.map { it.text }.distinct().size
+            
+            analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts)
+            Thread.sleep(1200)
+
             if (currentTextCount == previousTextCount) {
                 emptyScrolls++
                 if (emptyScrolls >= 3) {
@@ -122,9 +130,6 @@ class DealScannerService : AccessibilityService() {
             Thread.sleep(1500) 
         }
 
-        val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
-        val foundDeals = analyzeAndAddToCart(allNodes, minDiscount)
-
         val token = prefs.getString("BOT_TOKEN", "") ?: ""
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
@@ -136,7 +141,7 @@ class DealScannerService : AccessibilityService() {
                 openCartAndSendReport(token, chatId, message)
             } else {
                 addLog("⚠️ النظام لا يدعم تصوير الشاشة.")
-                sendTelegramMessage(token, chatId, message)
+                sendLongTelegramMessage(token, chatId, message)
             }
         } else {
             addLog("📉 لم يتم العثور على عروض مناسبة.")
@@ -157,9 +162,12 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    private fun analyzeAndAddToCart(nodesList: List<NodeData>, minDiscount: Int): List<String> {
-        val deals = mutableListOf<String>()
-        val processedProducts = mutableSetOf<String>()
+    private fun analyzeAndAddToCart(
+        nodesList: List<NodeData>, 
+        minDiscount: Int, 
+        deals: MutableList<String>, 
+        processedProducts: MutableSet<String>
+    ) {
         val numRegex = Regex("^[0-9]{1,6}(?:\\.[0-9]{1,2})?$")
         val uniqueNodes = nodesList.distinctBy { it.text }
 
@@ -180,10 +188,18 @@ class DealScannerService : AccessibilityService() {
                 processDealNode(p1, p2, i + 2, uniqueNodes, minDiscount, deals, processedProducts, current.node)
             }
         }
-        return deals
     }
 
-    private fun processDealNode(p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, deals: MutableList<String>, processed: MutableSet<String>, priceNode: AccessibilityNodeInfo) {
+    private fun processDealNode(
+        p1: Double, 
+        p2: Double, 
+        nameIdx: Int, 
+        uniqueNodes: List<NodeData>, 
+        minDiscount: Int, 
+        deals: MutableList<String>, 
+        processed: MutableSet<String>, 
+        priceNode: AccessibilityNodeInfo
+    ) {
         val oldPrice = maxOf(p1, p2)
         val newPrice = minOf(p1, p2)
 
@@ -223,32 +239,77 @@ class DealScannerService : AccessibilityService() {
     }
 
     private fun forceClickAddButton(node: AccessibilityNodeInfo): Boolean {
-        val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
-        if (text == "+" || text.contains("Add", true) || text.contains("أضف", true)) {
-            return tapNodeCoordinate(node)
+        val text = node.text?.toString()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+        val id = node.viewIdResourceName ?: ""
+        val className = node.className?.toString() ?: ""
+
+        val isExplicitAddButton = 
+            text == "+" || 
+            desc == "+" || 
+            text.contains("add", ignoreCase = true) || 
+            desc.contains("add", ignoreCase = true) || 
+            text.contains("أضف") || 
+            desc.contains("أضف") || 
+            id.contains("add", ignoreCase = true) || 
+            id.contains("plus", ignoreCase = true)
+
+        if (isExplicitAddButton) {
+            return clickNodeSafely(node)
         }
         
         for (i in 0 until node.childCount) {
-            val child = node.getChild(i)
-            if (child != null && forceClickAddButton(child)) return true
+            val child = node.getChild(i) ?: continue
+            if (forceClickAddButton(child)) return true
         }
         return false
     }
 
-    private fun tapNodeCoordinate(node: AccessibilityNodeInfo): Boolean {
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
-        if (rect.isEmpty) return false
-
-        val x = rect.centerX().toFloat()
-        val y = rect.centerY().toFloat()
-
-        val path = Path().apply { moveTo(x, y) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
-            .build()
-        dispatchGesture(gesture, null, null)
-        return true
+    // الدالة الآمنة للضغط مع التأكد من بقاء العنصر على الشاشة وانتظار الاستجابة
+    private fun clickNodeSafely(node: AccessibilityNodeInfo): Boolean {
+        try {
+            if (!node.refresh()) {
+                return false
+            }
+            if (node.isClickable) {
+                val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (clicked) {
+                    Thread.sleep(500)
+                    return true
+                }
+            }
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (rect.isEmpty || rect.width() < 10 || rect.height() < 10) {
+                return false
+            }
+            
+            val latch = CountDownLatch(1)
+            var completed = false
+            val path = Path().apply { moveTo(rect.centerX().toFloat(), rect.centerY().toFloat()) }
+            val gesture = GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
+                .build()
+                
+            val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    completed = true
+                    latch.countDown()
+                }
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    completed = false
+                    latch.countDown()
+                }
+            }, null)
+            
+            if (!dispatched) return false
+            
+            latch.await(1500, TimeUnit.MILLISECONDS)
+            Thread.sleep(500)
+            return completed
+        } catch (e: Exception) {
+            return false
+        }
     }
 
     @TargetApi(30)
@@ -257,7 +318,7 @@ class DealScannerService : AccessibilityService() {
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
         if (cartNode != null) {
-            tapNodeCoordinate(cartNode)
+            clickNodeSafely(cartNode)
             Thread.sleep(5000) 
             
             val screenshots = mutableListOf<ByteArray>()
@@ -278,8 +339,6 @@ class DealScannerService : AccessibilityService() {
                     val stream = ByteArrayOutputStream()
                     croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                     screenshots.add(stream.toByteArray())
-                } else {
-                    addLog("⚠️ فشل التقاط الصورة رقم ${i+1}")
                 }
                 
                 if (i < shotsCount - 1) {
@@ -291,16 +350,18 @@ class DealScannerService : AccessibilityService() {
             if (screenshots.isNotEmpty()) {
                 addLog("📸 تم التصوير. جاري الرفع...")
                 for ((index, imageBytes) in screenshots.withIndex()) {
-                    val caption = if (index == 0) message else "تابع صور السلة..."
-                    sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+                    val shortCaption = if (index == 0) "🛒 تم العثور على عروض وإضافتها للسلة." else "تابع صور السلة..."
+                    sendTelegramPhotoMultipart(token, chatId, imageBytes, shortCaption)
                 }
+                // إرسال التقرير النصي الطويل منفصلاً لتجنب خطأ 400
+                sendLongTelegramMessage(token, chatId, message)
             } else {
-                sendTelegramMessage(token, chatId, message)
+                sendLongTelegramMessage(token, chatId, message)
             }
             
         } else {
             addLog("❌ زر السلة غير موجود.")
-            sendTelegramMessage(token, chatId, message)
+            sendLongTelegramMessage(token, chatId, message)
         }
     }
 
@@ -320,7 +381,7 @@ class DealScannerService : AccessibilityService() {
                     latch.countDown()
                 }
                 override fun onFailure(errorCode: Int) {
-                    addLog("❌ خطأ التقاط الشاشة: $errorCode (تأكد من تحديث ملف XML)")
+                    addLog("❌ خطأ التقاط الشاشة: $errorCode")
                     latch.countDown()
                 }
             })
@@ -363,10 +424,34 @@ class DealScannerService : AccessibilityService() {
             outputStream.flush()
             outputStream.close()
             
-            if (connection.responseCode != 200) addLog("❌ فشل الرفع. كود: ${connection.responseCode}")
+            val responseCode = connection.responseCode
+            val responseText = try {
+                if (responseCode in 200..299) {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                } else {
+                    connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "لا توجد تفاصيل للخطأ"
+                }
+            } catch (e: Exception) {
+                "تعذر قراءة الاستجابة"
+            }
+
+            if (responseCode !in 200..299) {
+                addLog("❌ فشل الرفع: $responseCode | $responseText")
+            } else {
+                addLog("✅ تم رفع الصورة بنجاح.")
+            }
             connection.disconnect()
         } catch (e: Exception) {
             addLog("❌ خطأ رفع الصورة: ${e.message}")
+        }
+    }
+
+    private fun sendLongTelegramMessage(token: String, chatId: String, text: String) {
+        val maxLength = 3500
+        text.chunked(maxLength).forEachIndexed { index, part ->
+            val finalPart = if (index == 0) part else "📄 تابع التقرير:\n\n$part"
+            sendTelegramMessage(token, chatId, finalPart)
+            Thread.sleep(700)
         }
     }
 
