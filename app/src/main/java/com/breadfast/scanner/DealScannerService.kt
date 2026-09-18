@@ -17,6 +17,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -55,7 +56,6 @@ class DealScannerService : AccessibilityService() {
                     runAutomation(prefs)
                 } catch (e: Exception) {
                     addLog("❌ خطأ غير متوقع: ${e.message}")
-                    e.printStackTrace()
                 } finally {
                     isScanning = false
                     prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
@@ -133,7 +133,7 @@ class DealScannerService : AccessibilityService() {
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, message)
             } else {
-                addLog("⚠️ إصدار الأندرويد لديك لا يدعم تصوير الشاشة البرمجي. جاري إرسال النص فقط.")
+                addLog("⚠️ إصدار الأندرويد لديك لا يدعم تصوير الشاشة البرمجي.")
                 sendTelegramMessage(token, chatId, message)
             }
         } else {
@@ -147,8 +147,9 @@ class DealScannerService : AccessibilityService() {
 
     private fun extractNodes(node: AccessibilityNodeInfo?, nodesList: MutableList<NodeData>) {
         if (node == null) return
-        val text = node.text?.toString()?.trim() ?: node.contentDescription?.toString()?.trim()
-        if (!text.isNullOrEmpty()) {
+        val text = node.text?.toString()?.trim() ?: node.contentDescription?.toString()?.trim() ?: ""
+        
+        if (text.isNotEmpty()) {
             if (nodesList.none { it.text == text && it.node == node }) {
                 nodesList.add(NodeData(text, node))
             }
@@ -209,7 +210,7 @@ class DealScannerService : AccessibilityService() {
                             addedItemsCount++
                             break
                         }
-                        parent = parent.parent
+                        parent = parent?.parent
                     }
                     
                     val status = if (clickSuccess) "✅ (تمت الإضافة)" else "⚠️ (فشل الضغط)"
@@ -218,7 +219,7 @@ class DealScannerService : AccessibilityService() {
                     processed.add(productName)
                     
                 } catch (e: Exception) {
-                    addLog("❌ خطأ أثناء إضافة $productName: ${e.message}")
+                    addLog("❌ خطأ إضافة $productName: ${e.message}")
                 }
             }
         }
@@ -294,20 +295,23 @@ class DealScannerService : AccessibilityService() {
     private fun takeScreenshotSync(): Bitmap? {
         var bitmap: Bitmap? = null
         val latch = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
         
-        takeScreenshot(Display.DEFAULT_DISPLAY, applicationContext.mainExecutor, object : AccessibilityService.TakeScreenshotCallback {
+        takeScreenshot(Display.DEFAULT_DISPLAY, executor, object : AccessibilityService.TakeScreenshotCallback {
             override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                 val hwBuffer = screenshot.hardwareBuffer
-                bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                val colorSpace = screenshot.colorSpace
+                bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
                 hwBuffer.close()
                 latch.countDown()
             }
             override fun onFailure(errorCode: Int) {
-                addLog("❌ فشل التقاط الشاشة، كود الخطأ: $errorCode")
+                addLog("❌ فشل التقاط الشاشة، كود: $errorCode")
                 latch.countDown()
             }
         })
         latch.await(5, TimeUnit.SECONDS)
+        executor.shutdown()
         return bitmap
     }
 
