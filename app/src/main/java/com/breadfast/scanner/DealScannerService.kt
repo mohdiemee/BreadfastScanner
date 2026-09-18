@@ -133,7 +133,8 @@ class DealScannerService : AccessibilityService() {
         var scrollAttempts = 0
         
         while (dealsNode == null && scrollAttempts < 4) {
-            swipeUp()
+            // سحبة قصيرة للبحث عن أيقونة العروض
+            swipeUp(0.8f, 0.5f)
             Thread.sleep(1500)
             dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
             scrollAttempts++
@@ -148,7 +149,6 @@ class DealScannerService : AccessibilityService() {
         clickNodeSafely(dealsNode) 
         Thread.sleep(6000)
 
-        // === استرجاع ذاكرة المنتجات المرسلة وتجهيزها ===
         val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
         val cooldownMillis = cooldownHours * 60 * 60 * 1000L
         val historyStr = prefs.getString("PRODUCTS_HISTORY", "") ?: ""
@@ -161,7 +161,6 @@ class DealScannerService : AccessibilityService() {
                 if (parts.size == 2) {
                     val name = parts[0]
                     val time = parts[1].toLongOrNull() ?: 0L
-                    // الاحتفاظ بالمنتجات التي لم تتجاوز فترة التبريد فقط
                     if (currentTime - time < cooldownMillis) {
                         historyMap[name] = time
                     }
@@ -197,7 +196,8 @@ class DealScannerService : AccessibilityService() {
             previousTextCount = currentTextCount
             totalScrolls++
             
-            swipeUp()
+            // سحبة قصيرة جداً (من 80% إلى 50%) لضمان عدم تفويت أي منتجات أثناء السكرول[cite: 7]
+            swipeUp(0.8f, 0.5f)
             Thread.sleep(1500) 
         }
 
@@ -210,7 +210,8 @@ class DealScannerService : AccessibilityService() {
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals)
             } else {
-                sendChunksAsText(token, chatId, foundDeals.chunked(6))
+                // تقسيم المنتجات إلى مجموعات من 5
+                sendChunksAsText(token, chatId, foundDeals.chunked(5))
             }
         } else {
             addLog("📉 لم يتم العثور على عروض مناسبة أو جميع العروض تم إرسالها خلال فترة $cooldownHours ساعات الماضية.")
@@ -303,13 +304,11 @@ class DealScannerService : AccessibilityService() {
                     uniqueNodes[nameIdx].text
                 } else "منتج مميز"
 
-                // تخطي إذا تمت معالجته في السحبة الحالية
                 if (processed.contains(productName)) return
                 
-                // === فحص فترة التبريد (COOLDOWN) ===
                 val lastSentTime = historyMap[productName]
                 if (lastSentTime != null && (System.currentTimeMillis() - lastSentTime) < cooldownMillis) {
-                    return // المنتج ما زال في فترة التبريد، تجاهله
+                    return 
                 }
                 
                 try {
@@ -325,7 +324,6 @@ class DealScannerService : AccessibilityService() {
                     }
                     
                     var cleanName = productName.replace("\n", " ").trim()
-                    // تحويل الصيغة مثل 3x أو 5X إلى 3 قطع
                     cleanName = cleanName.replace(Regex("(?i)(\\d+)\\s*x\\s*"), "$1 قطع ")
                     cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
                     
@@ -334,7 +332,6 @@ class DealScannerService : AccessibilityService() {
                     
                     processed.add(productName)
                     
-                    // تحديث تاريخ الإرسال للمنتج في الذاكرة
                     historyMap[productName] = System.currentTimeMillis()
                     val newHistoryStr = historyMap.map { "${it.key}::${it.value}" }.joinToString("||")
                     prefs.edit().putString("PRODUCTS_HISTORY", newHistoryStr).apply()
@@ -416,7 +413,8 @@ class DealScannerService : AccessibilityService() {
         addLog("🛒 جاري فتح السلة لتصوير التقرير...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
-        val chunks = deals.chunked(6)
+        // تقسيم المنتجات إلى مجموعات من 5 بدلاً من 6 لتتوافق مع سعة صورة السلة
+        val chunks = deals.chunked(5)
         val shotsCount = chunks.size
         
         if (cartNode != null) {
@@ -441,7 +439,8 @@ class DealScannerService : AccessibilityService() {
                 }
                 
                 if (i < shotsCount - 1) {
-                    swipeUp()
+                    // سحبة أطول قليلاً داخل السلة (من 80% لـ 20%) لتجاوز الـ 5 منتجات المصورة وجلب منتجات جديدة
+                    swipeUp(0.8f, 0.2f)
                     Thread.sleep(1500)
                 }
             }
@@ -570,13 +569,14 @@ class DealScannerService : AccessibilityService() {
         } catch (e: Exception) {}
     }
 
-    private fun swipeUp() {
+    // إضافة معاملات (Parameters) للتحكم في طول السحبة لكل حالة
+    private fun swipeUp(startFactor: Float = 0.8f, endFactor: Float = 0.4f) {
         val displayMetrics = resources.displayMetrics
         val path = Path().apply {
-            moveTo(displayMetrics.widthPixels / 2f, displayMetrics.heightPixels * 0.8f)
-            lineTo(displayMetrics.widthPixels / 2f, displayMetrics.heightPixels * 0.2f)
+            moveTo(displayMetrics.widthPixels / 2f, displayMetrics.heightPixels * startFactor)
+            lineTo(displayMetrics.widthPixels / 2f, displayMetrics.heightPixels * endFactor)
         }
-        dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 400)).build(), null, null)
+        dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 450)).build(), null, null)
     }
 
     private fun findNodeByText(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
