@@ -104,7 +104,6 @@ class DealScannerService : AccessibilityService() {
         var emptyScrolls = 0
         var totalScrolls = 0
         
-        // التعديل الأهم: مسح وتحليل كل صفحة ظاهرة وإضافة منتجاتها للسلة "قبل" السحب التالي
         while (totalScrolls < 100) {
             val visibleNodes = mutableListOf<NodeData>()
             extractNodes(rootInActiveWindow, visibleNodes)
@@ -134,13 +133,12 @@ class DealScannerService : AccessibilityService() {
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
-            addLog("🔥 تم العثور على ${foundDeals.size} منتجات وتمت محاولة إضافتها.")
-            val message = "🛒 **تقرير الإضافة للسلة:**\n\n" + foundDeals.joinToString("\n---\n")
+            addLog("🔥 تم العثور على ${foundDeals.size} منتجات وتم تنفيذ محاولة نقر عليها.")
+            val message = "🛒 **تقرير المنتجات المطابقة:**\n\n" + foundDeals.joinToString("\n---\n")
             
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, message)
             } else {
-                addLog("⚠️ النظام لا يدعم تصوير الشاشة.")
                 sendLongTelegramMessage(token, chatId, message)
             }
         } else {
@@ -166,7 +164,7 @@ class DealScannerService : AccessibilityService() {
         nodesList: List<NodeData>, 
         minDiscount: Int, 
         deals: MutableList<String>, 
-        processedProducts: MutableSet<String>
+        processedProducts: MutableSetOf<String>
     ) {
         val numRegex = Regex("^[0-9]{1,6}(?:\\.[0-9]{1,2})?$")
         val uniqueNodes = nodesList.distinctBy { it.text }
@@ -190,6 +188,23 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
+    private fun findProductCard(priceNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = priceNode.parent
+        val screenWidth = resources.displayMetrics.widthPixels
+        for (level in 0..5) {
+            val node = current ?: break
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            
+            val looksLikeProductCard = rect.width() > screenWidth * 0.18 && rect.width() < screenWidth * 0.48 && rect.height() > 150
+            if (looksLikeProductCard) {
+                return node
+            }
+            current = node.parent
+        }
+        return priceNode.parent
+    }
+
     private fun processDealNode(
         p1: Double, 
         p2: Double, 
@@ -197,7 +212,7 @@ class DealScannerService : AccessibilityService() {
         uniqueNodes: List<NodeData>, 
         minDiscount: Int, 
         deals: MutableList<String>, 
-        processed: MutableSet<String>, 
+        processed: MutableSetOf<String>, 
         priceNode: AccessibilityNodeInfo
     ) {
         val oldPrice = maxOf(p1, p2)
@@ -214,19 +229,18 @@ class DealScannerService : AccessibilityService() {
                 if (processed.contains(productName)) return
                 
                 try {
-                    var currentParent = priceNode.parent
-                    var clickSuccess = false
-                    for (level in 0..4) { 
-                        val p = currentParent ?: break
-                        if (forceClickAddButton(p)) {
-                            clickSuccess = true
-                            addedItemsCount++
-                            break
-                        }
-                        currentParent = p.parent
+                    val productCard = findProductCard(priceNode)
+                    val clickSuccess = if (productCard != null) {
+                        forceClickAddButton(productCard)
+                    } else {
+                        false
+                    }
+
+                    if (clickSuccess) {
+                        addedItemsCount++
                     }
                     
-                    val status = if (clickSuccess) "✅" else "⚠️ (فشل النقر)"
+                    val status = if (clickSuccess) "✅ (محاولة إضافة)" else "⚠️ (فشل النقر)"
                     val dealText = "$status **$productName**\n📉 الخصم: $discountPercent%\n💰 $newPrice بدلاً من $oldPrice"
                     deals.add(dealText)
                     processed.add(productName)
@@ -242,19 +256,34 @@ class DealScannerService : AccessibilityService() {
         val text = node.text?.toString()?.trim() ?: ""
         val desc = node.contentDescription?.toString()?.trim() ?: ""
         val id = node.viewIdResourceName ?: ""
-        val className = node.className?.toString() ?: ""
+        val combined = "$text $desc $id".lowercase(java.util.Locale.ROOT)
 
-        val isExplicitAddButton = 
-            text == "+" || 
-            desc == "+" || 
-            text.contains("add", ignoreCase = true) || 
-            desc.contains("add", ignoreCase = true) || 
-            text.contains("أضف") || 
-            desc.contains("أضف") || 
-            id.contains("add", ignoreCase = true) || 
-            id.contains("plus", ignoreCase = true)
+        val isFavoriteButton = combined.contains("favorite") || combined.contains("favourite") ||
+                combined.contains("wishlist") || combined.contains("wish_list") ||
+                combined.contains("saved") || combined.contains("مفضلة") ||
+                combined.contains("المفضلة") || combined.contains("رغبات") || combined.contains("حفظ")
 
-        if (isExplicitAddButton) {
+        if (isFavoriteButton) {
+            return false
+        }
+
+        val isCartAddButton = text == "+" || desc == "+" ||
+                id.contains("add_to_cart", ignoreCase = true) || id.contains("cart_add", ignoreCase = true) ||
+                id.contains("add_cart", ignoreCase = true) || id.contains("increase_quantity", ignoreCase = true) ||
+                id.contains("quantity_increase", ignoreCase = true) || id.contains("increment", ignoreCase = true) ||
+                combined.contains("add to cart") || combined.contains("add_to_cart") ||
+                combined.contains("increase quantity") || combined.contains("أضف إلى السلة") ||
+                combined.contains("اضف الى السلة") || combined.contains("زيادة الكمية")
+
+        if (isCartAddButton) {
+            return clickNodeSafely(node)
+        }
+
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val isSmallClickable = node.isClickable && combined.isBlank() && rect.width() in 40..250 && rect.height() in 40..250
+        
+        if (isSmallClickable) {
             return clickNodeSafely(node)
         }
         
@@ -265,7 +294,6 @@ class DealScannerService : AccessibilityService() {
         return false
     }
 
-    // الدالة الآمنة للضغط مع التأكد من بقاء العنصر على الشاشة وانتظار الاستجابة
     private fun clickNodeSafely(node: AccessibilityNodeInfo): Boolean {
         try {
             if (!node.refresh()) {
@@ -353,7 +381,6 @@ class DealScannerService : AccessibilityService() {
                     val shortCaption = if (index == 0) "🛒 تم العثور على عروض وإضافتها للسلة." else "تابع صور السلة..."
                     sendTelegramPhotoMultipart(token, chatId, imageBytes, shortCaption)
                 }
-                // إرسال التقرير النصي الطويل منفصلاً لتجنب خطأ 400
                 sendLongTelegramMessage(token, chatId, message)
             } else {
                 sendLongTelegramMessage(token, chatId, message)
@@ -425,20 +452,10 @@ class DealScannerService : AccessibilityService() {
             outputStream.close()
             
             val responseCode = connection.responseCode
-            val responseText = try {
-                if (responseCode in 200..299) {
-                    connection.inputStream.bufferedReader().use { it.readText() }
-                } else {
-                    connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "لا توجد تفاصيل للخطأ"
-                }
-            } catch (e: Exception) {
-                "تعذر قراءة الاستجابة"
-            }
-
             if (responseCode !in 200..299) {
-                addLog("❌ فشل الرفع: $responseCode | $responseText")
+                addLog("❌ فشل رفع Telegram: $responseCode")
             } else {
-                addLog("✅ تم رفع الصورة بنجاح.")
+                addLog("✅ تم رفع صورة السلة إلى Telegram.")
             }
             connection.disconnect()
         } catch (e: Exception) {
