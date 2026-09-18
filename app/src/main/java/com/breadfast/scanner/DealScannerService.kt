@@ -53,7 +53,7 @@ class DealScannerService : AccessibilityService() {
     }
 
     private fun runAutomation(prefs: SharedPreferences) {
-        addLog("⏳ تم فتح التطبيق.. ننتظر 20 ثانية لاكتمال التحميل...")
+        addLog("⏳ تم فتح التطبيق.. ننتظر 20 ثانية للتحميل...")
         Thread.sleep(20000) 
 
         val rootNode = rootInActiveWindow
@@ -63,12 +63,10 @@ class DealScannerService : AccessibilityService() {
             return
         }
 
-        // 1. البحث عن أيقونة Deals والتمرير للوصول إليها باستخدام Swipe
         var dealsNode = findNodeByText(rootInActiveWindow, "Deals")
         var scrollAttempts = 0
         
         while (dealsNode == null && scrollAttempts < 4) {
-            addLog("🔄 جاري السحب لأسفل للبحث عن أيقونة العروض...")
             swipeUp()
             Thread.sleep(3000)
             dealsNode = findNodeByText(rootInActiveWindow, "Deals")
@@ -76,53 +74,66 @@ class DealScannerService : AccessibilityService() {
         }
 
         if (dealsNode == null) {
-            addLog("⚠️ لم يتم العثور على أيقونة (Deals)، جاري الإغلاق.")
+            addLog("⚠️ لم يتم العثور على أيقونة العروض، جاري الإغلاق.")
             performGlobalAction(GLOBAL_ACTION_HOME)
             return
         }
 
-        addLog("🎯 تم العثور على أيقونة العروض! جاري الضغط...")
+        addLog("🎯 تم العثور على الأيقونة! جاري الدخول...")
         clickNode(dealsNode)
-        
-        addLog("⏳ ننتظر 8 ثواني لتحميل صفحة العروض...")
         Thread.sleep(8000)
 
-        // 2. قراءة صفحة العروض (مسح وسحب متكرر للمنتجات الفعلية)
-        addLog("🔍 جاري مسح المنتجات وقراءة الأسعار...")
+        addLog("🔍 جاري مسح جميع المنتجات حتى نهاية الصفحة...")
         val allTexts = mutableListOf<String>()
+        var previousTextCount = 0
+        var emptyScrolls = 0
+        var totalScrolls = 0
         
-        for (i in 1..4) {
+        // تمرير مستمر حتى نهاية الصفحة (مع حماية 150 سحبة كحد أقصى لمنع تعليق الهاتف)
+        while (totalScrolls < 150) {
             extractTextFromNodes(rootInActiveWindow, allTexts)
-            swipeUp() // السحب البشري لأسفل الشاشة
+            
+            val currentTextCount = allTexts.distinct().size
+            if (currentTextCount == previousTextCount) {
+                emptyScrolls++
+                // إذا سحب 3 مرات ولم يجد منتجات جديدة، يتأكد أنه وصل لنهاية الشاشة
+                if (emptyScrolls >= 3) {
+                    addLog("🏁 تم الوصول لنهاية قائمة العروض بنجاح.")
+                    break 
+                }
+            } else {
+                emptyScrolls = 0
+            }
+            previousTextCount = currentTextCount
+            totalScrolls++
+            
+            swipeUp()
             Thread.sleep(3000)
         }
 
-        // 3. تحليل النصوص وحساب النسب
         val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
         val foundDeals = analyzePricesAndCalculateDiscount(allTexts, minDiscount)
 
-        // 4. الإرسال والإغلاق
         if (foundDeals.isNotEmpty()) {
-            addLog("🔥 تم العثور على ${foundDeals.size} منتجات بخصم يتخطى $minDiscount%.")
+            addLog("🔥 تم العثور على ${foundDeals.size} عروض فعلية.")
             val token = prefs.getString("BOT_TOKEN", "") ?: ""
             val chatId = prefs.getString("CHAT_ID", "") ?: ""
             
-            val message = "🛒 **عروض بريدفاست الجديدة:**\n\n" + foundDeals.joinToString("\n---\n")
+            val message = "🛒 **عروض بريدفاست المطابقة لشرطك:**\n\n" + foundDeals.joinToString("\n---\n")
             sendTelegramMessage(token, chatId, message)
         } else {
-            addLog("📉 لم يتم العثور على أي خصومات تتخطى $minDiscount%.")
+            addLog("📉 لم يتم العثور على خصومات تتخطى $minDiscount%.")
         }
 
-        addLog("🏠 انتهت المهمة بنجاح، جاري إغلاق التطبيق.")
+        addLog("🏠 اكتملت العملية. جاري العودة للشاشة الرئيسية.")
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
-    // --- محاكاة السحب البشري (Swipe Up) ---
     private fun swipeUp() {
         val displayMetrics = resources.displayMetrics
         val middleX = displayMetrics.widthPixels / 2f
-        val startY = displayMetrics.heightPixels * 0.8f // يبدأ السحب من أسفل الشاشة
-        val endY = displayMetrics.heightPixels * 0.2f   // ينتهي في أعلى الشاشة
+        val startY = displayMetrics.heightPixels * 0.8f 
+        val endY = displayMetrics.heightPixels * 0.2f   
 
         val path = Path().apply {
             moveTo(middleX, startY)
@@ -130,17 +141,17 @@ class DealScannerService : AccessibilityService() {
         }
 
         val gestureBuilder = GestureDescription.Builder()
-        val stroke = GestureDescription.StrokeDescription(path, 0, 500) // مدة السحب نصف ثانية
+        val stroke = GestureDescription.StrokeDescription(path, 0, 500)
         gestureBuilder.addStroke(stroke)
-
         dispatchGesture(gestureBuilder.build(), null, null)
     }
 
     private fun extractTextFromNodes(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
         if (node == null) return
-        val text = node.text?.toString() ?: node.contentDescription?.toString()
-        if (!text.isNullOrBlank()) {
-            texts.add(text.trim())
+        
+        val text = node.text?.toString()?.trim()
+        if (!text.isNullOrEmpty()) {
+            texts.add(text)
         }
         for (i in 0 until node.childCount) {
             extractTextFromNodes(node.getChild(i), texts)
@@ -150,35 +161,49 @@ class DealScannerService : AccessibilityService() {
     private fun analyzePricesAndCalculateDiscount(texts: List<String>, minDiscount: Int): List<String> {
         val deals = mutableListOf<String>()
         val uniqueTexts = texts.distinct() 
-        val numRegex = Regex("^\\d+(\\.\\d+)?$")
 
-        for (i in 0 until uniqueTexts.size - 1) {
-            val text1 = uniqueTexts[i].replace(Regex("[^0-9.]"), "")
-            val text2 = uniqueTexts[i+1].replace(Regex("[^0-9.]"), "")
-            
-            if (text1.matches(numRegex) && text2.matches(numRegex) && text1.isNotEmpty() && text2.isNotEmpty()) {
-                val p1 = text1.toDoubleOrNull()
-                val p2 = text2.toDoubleOrNull()
+        for (i in uniqueTexts.indices) {
+            val currentText = uniqueTexts[i]
+
+            // التعديل هنا: يقبل أي رقم من خانة لـ 6 خانات (تصل لـ 999,999) ويرفض الأكواد الأطول
+            val dualPriceMatch = Regex("^([0-9]{1,6}(?:\\.[0-9]{1,2})?)\\s+([0-9]{1,6}(?:\\.[0-9]{1,2})?)$").find(currentText)
+            if (dualPriceMatch != null) {
+                val p1 = dualPriceMatch.groupValues[1].toDoubleOrNull() ?: continue
+                val p2 = dualPriceMatch.groupValues[2].toDoubleOrNull() ?: continue
                 
-                if (p1 != null && p2 != null && p1 != p2) {
-                    val oldPrice = maxOf(p1, p2)
-                    val newPrice = minOf(p1, p2)
-                    val discountPercent = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
-                    
-                    if (discountPercent >= minDiscount) {
-                        val productName = if (i + 2 < uniqueTexts.size && !uniqueTexts[i+2].replace(Regex("[^0-9.]"), "").matches(numRegex)) {
-                            uniqueTexts[i+2]
-                        } else {
-                            "منتج مميز"
-                        }
-                        
-                        val dealText = "✅ **$productName**\n📉 الخصم: $discountPercent%\n💰 السعر: $newPrice بدلاً من $oldPrice"
-                        if (!deals.contains(dealText)) deals.add(dealText)
-                    }
-                }
+                processDeal(p1, p2, i + 1, uniqueTexts, minDiscount, deals)
+                continue
+            }
+
+            val singlePriceRegex = Regex("^[0-9]{1,6}(?:\\.[0-9]{1,2})?$")
+            if (singlePriceRegex.matches(currentText) && i + 1 < uniqueTexts.size && singlePriceRegex.matches(uniqueTexts[i+1])) {
+                val p1 = currentText.toDoubleOrNull() ?: continue
+                val p2 = uniqueTexts[i+1].toDoubleOrNull() ?: continue
+                
+                processDeal(p1, p2, i + 2, uniqueTexts, minDiscount, deals)
             }
         }
         return deals
+    }
+
+    private fun processDeal(p1: Double, p2: Double, nameIndex: Int, uniqueTexts: List<String>, minDiscount: Int, deals: MutableList<String>) {
+        val oldPrice = maxOf(p1, p2)
+        val newPrice = minOf(p1, p2)
+
+        if (oldPrice > 0 && oldPrice != newPrice) {
+            val discountPercent = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
+            
+            if (discountPercent >= minDiscount) {
+                val productName = if (nameIndex < uniqueTexts.size && !uniqueTexts[nameIndex].matches(Regex("^[0-9\\s.]+$"))) {
+                    uniqueTexts[nameIndex]
+                } else {
+                    "منتج بعرض مميز"
+                }
+                
+                val dealText = "✅ **$productName**\n📉 الخصم: $discountPercent%\n💰 السعر: $newPrice بدلاً من $oldPrice"
+                if (!deals.contains(dealText)) deals.add(dealText)
+            }
+        }
     }
 
     private fun findNodeByText(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
@@ -215,9 +240,7 @@ class DealScannerService : AccessibilityService() {
                 connection.requestMethod = "GET"
                 connection.inputStream.reader().readText()
                 connection.disconnect()
-            } catch (e: Exception) {
-                addLog("❌ خطأ إرسال للتليجرام: ${e.message}")
-            }
+            } catch (e: Exception) {}
         }
     }
 
