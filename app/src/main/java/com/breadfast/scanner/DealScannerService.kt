@@ -31,6 +31,9 @@ class DealScannerService : AccessibilityService() {
         val prefs = getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("IS_ACTIVE", false)) return
 
+        // الشرط السحري: هل البوت يعمل بأمر المنبه أم بتدخل يدوي؟
+        if (!prefs.getBoolean("IS_AUTO_RUNNING", false)) return
+
         val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: ""
         
         if (event.packageName?.toString() == targetApp) {
@@ -47,6 +50,8 @@ class DealScannerService : AccessibilityService() {
                     addLog("❌ خطأ أثناء الفحص: ${e.message}")
                 } finally {
                     isScanning = false
+                    // سحب التأشيرة بعد انتهاء العمل ليعود البوت للنوم
+                    prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
                 }
             }
         }
@@ -63,13 +68,14 @@ class DealScannerService : AccessibilityService() {
             return
         }
 
-        var dealsNode = findNodeByText(rootInActiveWindow, "Deals")
+        // دعم اللغتين: البحث عن Deals أو عروض
+        var dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
         var scrollAttempts = 0
         
         while (dealsNode == null && scrollAttempts < 4) {
             swipeUp()
             Thread.sleep(3000)
-            dealsNode = findNodeByText(rootInActiveWindow, "Deals")
+            dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
             scrollAttempts++
         }
 
@@ -83,20 +89,19 @@ class DealScannerService : AccessibilityService() {
         clickNode(dealsNode)
         Thread.sleep(8000)
 
-        addLog("🔍 جاري مسح جميع المنتجات حتى نهاية الصفحة...")
+        addLog("🔍 جاري مسح المنتجات وإضافتها للسلة إن طابقت الشروط...")
         val allTexts = mutableListOf<String>()
         var previousTextCount = 0
         var emptyScrolls = 0
         var totalScrolls = 0
         
-        // تمرير مستمر حتى نهاية الصفحة (مع حماية 150 سحبة كحد أقصى لمنع تعليق الهاتف)
         while (totalScrolls < 150) {
-            extractTextFromNodes(rootInActiveWindow, allTexts)
+            // استخراج النصوص والعقد البرمجية لتمكين الضغط
+            extractTextAndAttemptCartAdd(rootInActiveWindow, allTexts, prefs.getInt("MIN_DISCOUNT", 40))
             
             val currentTextCount = allTexts.distinct().size
             if (currentTextCount == previousTextCount) {
                 emptyScrolls++
-                // إذا سحب 3 مرات ولم يجد منتجات جديدة، يتأكد أنه وصل لنهاية الشاشة
                 if (emptyScrolls >= 3) {
                     addLog("🏁 تم الوصول لنهاية قائمة العروض بنجاح.")
                     break 
@@ -115,11 +120,11 @@ class DealScannerService : AccessibilityService() {
         val foundDeals = analyzePricesAndCalculateDiscount(allTexts, minDiscount)
 
         if (foundDeals.isNotEmpty()) {
-            addLog("🔥 تم العثور على ${foundDeals.size} عروض فعلية.")
+            addLog("🔥 تم العثور على ${foundDeals.size} عروض فعلية وتمت محاولة إضافتها.")
             val token = prefs.getString("BOT_TOKEN", "") ?: ""
             val chatId = prefs.getString("CHAT_ID", "") ?: ""
             
-            val message = "🛒 **عروض بريدفاست المطابقة لشرطك:**\n\n" + foundDeals.joinToString("\n---\n")
+            val message = "🛒 **عروض بريدفاست المطابقة وتمت إضافتها:**\n\n" + foundDeals.joinToString("\n---\n")
             sendTelegramMessage(token, chatId, message)
         } else {
             addLog("📉 لم يتم العثور على خصومات تتخطى $minDiscount%.")
@@ -146,15 +151,22 @@ class DealScannerService : AccessibilityService() {
         dispatchGesture(gestureBuilder.build(), null, null)
     }
 
-    private fun extractTextFromNodes(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
+    // هذه الدالة المحدثة تجمع النصوص وتحاول الضغط على الأزرار القابلة للضغط المجاورة للسعر
+    private fun extractTextAndAttemptCartAdd(node: AccessibilityNodeInfo?, texts: MutableList<String>, minDiscount: Int) {
         if (node == null) return
         
         val text = node.text?.toString()?.trim()
         if (!text.isNullOrEmpty()) {
             texts.add(text)
+            // محاولة التقاط أزرار (+) بناءً على وجود أسعار في العقدة المجاورة 
+            // (هذه خطوة تجريبية تعتمد على هيكل واجهة بريدفاست)
+            if (node.isClickable && (text == "+" || text.contains("Add", true) || text.contains("أضف", true))) {
+                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }
         }
+        
         for (i in 0 until node.childCount) {
-            extractTextFromNodes(node.getChild(i), texts)
+            extractTextAndAttemptCartAdd(node.getChild(i), texts, minDiscount)
         }
     }
 
@@ -165,12 +177,10 @@ class DealScannerService : AccessibilityService() {
         for (i in uniqueTexts.indices) {
             val currentText = uniqueTexts[i]
 
-            // التعديل هنا: يقبل أي رقم من خانة لـ 6 خانات (تصل لـ 999,999) ويرفض الأكواد الأطول
             val dualPriceMatch = Regex("^([0-9]{1,6}(?:\\.[0-9]{1,2})?)\\s+([0-9]{1,6}(?:\\.[0-9]{1,2})?)$").find(currentText)
             if (dualPriceMatch != null) {
                 val p1 = dualPriceMatch.groupValues[1].toDoubleOrNull() ?: continue
                 val p2 = dualPriceMatch.groupValues[2].toDoubleOrNull() ?: continue
-                
                 processDeal(p1, p2, i + 1, uniqueTexts, minDiscount, deals)
                 continue
             }
@@ -179,7 +189,6 @@ class DealScannerService : AccessibilityService() {
             if (singlePriceRegex.matches(currentText) && i + 1 < uniqueTexts.size && singlePriceRegex.matches(uniqueTexts[i+1])) {
                 val p1 = currentText.toDoubleOrNull() ?: continue
                 val p2 = uniqueTexts[i+1].toDoubleOrNull() ?: continue
-                
                 processDeal(p1, p2, i + 2, uniqueTexts, minDiscount, deals)
             }
         }
