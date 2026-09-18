@@ -179,30 +179,34 @@ class DealScannerService : AccessibilityService() {
         val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
         val foundDeals = mutableListOf<String>()
         val processedProducts = mutableSetOf<String>()
-        var previousTextCount = 0
+        
+        // === المتغير الجديد الذي يحفظ بصمة الشاشة بدلاً من عدد النصوص ===
+        var previousScreenContent = ""
         var emptyScrolls = 0
         var totalScrolls = 0
         
-        // === تم زيادة الحد الأقصى للسكرول إلى 1000 ===
         while (totalScrolls < 1000) {
             val visibleNodes = mutableListOf<NodeData>()
             extractNodes(rootInActiveWindow, visibleNodes)
             
-            val currentTextCount = visibleNodes.map { it.text }.distinct().size
+            // تجميع كل النصوص الظاهرة في بصمة نصية واحدة
+            val currentScreenContent = visibleNodes.map { it.text }.distinct().sorted().joinToString("|")
             
             analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
             Thread.sleep(1200)
 
-            if (currentTextCount == previousTextCount) {
+            // مقارنة البصمة الفعلية للنصوص
+            if (currentScreenContent == previousScreenContent) {
                 emptyScrolls++
                 if (emptyScrolls >= 3) {
-                    addLog("🏁 نهاية قائمة العروض.")
+                    addLog("🏁 نهاية قائمة العروض الفعلية.")
                     break 
                 }
             } else {
                 emptyScrolls = 0
             }
-            previousTextCount = currentTextCount
+            
+            previousScreenContent = currentScreenContent
             totalScrolls++
             
             swipeUp(0.8f, 0.5f)
