@@ -21,7 +21,9 @@ class AlarmReceiver : BroadcastReceiver() {
         val launchIntent = pm.getLaunchIntentForPackage(targetApp)
         
         if (launchIntent != null) {
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            // === تم تعديل الـ Flags هنا لضمان فتح التطبيق من الصفر (الرئيسية) ===
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            
             try {
                 // === إضافة كود إضاءة الشاشة (WakeLock) هنا ===
                 val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
