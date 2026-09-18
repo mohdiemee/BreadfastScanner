@@ -7,29 +7,25 @@ import android.content.Intent
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val prefs = context.getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
-        val isActive = prefs.getBoolean("IS_ACTIVE", false)
         
-        // تسجيل أن المنبه قد رن
-        addLog(context, "⏰ المنبه رن الآن! محاولة فتح تطبيق بريدفاست...")
+        if (!prefs.getBoolean("IS_ACTIVE", false)) return
 
-        if (!isActive) {
-            addLog(context, "⚠️ البوت متوقف من الإعدادات، تم تجاهل المنبه.")
-            return
-        }
+        val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: "com.breadfast.application"
+        addLog(context, "⏰ المنبه رن! محاولة فتح: $targetApp")
 
         val pm = context.packageManager
-        val launchIntent = pm.getLaunchIntentForPackage("com.breadfast.application")
+        val launchIntent = pm.getLaunchIntentForPackage(targetApp)
         
         if (launchIntent != null) {
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             try {
                 context.startActivity(launchIntent)
-                addLog(context, "🚀 تم إرسال أمر فتح بريدفاست للنظام بنجاح.")
+                addLog(context, "🚀 تم إرسال أمر الفتح بنجاح.")
             } catch (e: Exception) {
-                addLog(context, "❌ نظام الأندرويد منع الفتح التلقائي (Background Start Restriction): ${e.message}")
+                addLog(context, "❌ منع النظام الفتح: ${e.message}")
             }
         } else {
-            addLog(context, "❌ لم يتم العثور على تطبيق بريدفاست (تأكد من أنه مثبت وأن اسم الحزمة صحيح).")
+            addLog(context, "❌ لم يتم العثور على التطبيق. تأكد من صحة اسم الحزمة.")
         }
     }
 
