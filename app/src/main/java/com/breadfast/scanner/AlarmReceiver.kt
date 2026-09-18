@@ -3,6 +3,7 @@ package com.breadfast.scanner
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
 
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -22,6 +23,17 @@ class AlarmReceiver : BroadcastReceiver() {
         if (launchIntent != null) {
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             try {
+                // === إضافة كود إضاءة الشاشة (WakeLock) هنا ===
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                @Suppress("DEPRECATION")
+                val wakeLock = powerManager.newWakeLock(
+                    PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                    "BreadfastBot::WakeLock"
+                )
+                // إضاءة الشاشة لمدة 10 ثوانٍ لضمان استجابة التطبيق وخدمة الوصول
+                wakeLock.acquire(10000)
+                // ===============================================
+
                 context.startActivity(launchIntent)
                 addLog(context, "🚀 تم إرسال أمر الفتح بنجاح (وضع الأتمتة مفعل).")
             } catch (e: Exception) {
