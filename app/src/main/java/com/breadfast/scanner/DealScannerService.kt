@@ -186,7 +186,7 @@ class DealScannerService : AccessibilityService() {
         return deals
     }
 
-    private fun processDealNode(p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, deals: MutableList<String>, processed: MutableSetOf<String>, priceNode: AccessibilityNodeInfo) {
+    private fun processDealNode(p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, deals: MutableList<String>, processed: MutableSet<String>, priceNode: AccessibilityNodeInfo) {
         val oldPrice = maxOf(p1, p2)
         val newPrice = minOf(p1, p2)
 
@@ -210,7 +210,7 @@ class DealScannerService : AccessibilityService() {
                             addedItemsCount++
                             break
                         }
-                        parent = parent?.parent
+                        parent = parent.parent
                     }
                     
                     val status = if (clickSuccess) "✅ (تمت الإضافة)" else "⚠️ (فشل الضغط)"
