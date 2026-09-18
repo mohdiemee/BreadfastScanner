@@ -65,7 +65,6 @@ class DealScannerService : AccessibilityService() {
                     Thread.sleep(2000)
                     performGlobalAction(GLOBAL_ACTION_HOME)
                     Thread.sleep(1500)
-                    // === إغلاق التطبيق نهائياً من الذاكرة (RAM) ===
                     try {
                         val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
                         am.killBackgroundProcesses(targetApp)
@@ -73,7 +72,6 @@ class DealScannerService : AccessibilityService() {
                     } catch (e: Exception) {
                         addLog("⚠️ تم الرجوع للرئيسية (تعذر مسح الذاكرة).")
                     }
-                    // ===============================================
                 }
             }
         }
@@ -142,7 +140,7 @@ class DealScannerService : AccessibilityService() {
         var scrollAttempts = 0
         
         while (dealsNode == null && scrollAttempts < 4) {
-            swipeUp(0.8f, 0.5f)
+            swipeUp(0.8f, 0.5f, 500L)
             Thread.sleep(1500)
             dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
             scrollAttempts++
@@ -180,7 +178,6 @@ class DealScannerService : AccessibilityService() {
         val foundDeals = mutableListOf<String>()
         val processedProducts = mutableSetOf<String>()
         
-        // === المتغير الجديد الذي يحفظ بصمة الشاشة بدلاً من عدد النصوص ===
         var previousScreenContent = ""
         var emptyScrolls = 0
         var totalScrolls = 0
@@ -189,13 +186,11 @@ class DealScannerService : AccessibilityService() {
             val visibleNodes = mutableListOf<NodeData>()
             extractNodes(rootInActiveWindow, visibleNodes)
             
-            // تجميع كل النصوص الظاهرة في بصمة نصية واحدة
             val currentScreenContent = visibleNodes.map { it.text }.distinct().sorted().joinToString("|")
             
             analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
             Thread.sleep(1200)
 
-            // مقارنة البصمة الفعلية للنصوص
             if (currentScreenContent == previousScreenContent) {
                 emptyScrolls++
                 if (emptyScrolls >= 3) {
@@ -209,7 +204,7 @@ class DealScannerService : AccessibilityService() {
             previousScreenContent = currentScreenContent
             totalScrolls++
             
-            swipeUp(0.8f, 0.5f)
+            swipeUp(0.8f, 0.5f, 500L)
             Thread.sleep(1500) 
         }
 
@@ -222,7 +217,7 @@ class DealScannerService : AccessibilityService() {
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals)
             } else {
-                sendChunksAsText(token, chatId, foundDeals.chunked(5))
+                sendChunksAsText(token, chatId, foundDeals.chunked(5)) // تقسيم 5 منتجات
             }
         } else {
             addLog("📉 لم يتم العثور على عروض مناسبة أو جميع العروض تم إرسالها خلال فترة $cooldownHours ساعات الماضية.")
@@ -424,6 +419,7 @@ class DealScannerService : AccessibilityService() {
         addLog("🛒 جاري فتح السلة لتصوير التقرير...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
+        // تقسيم المنتجات إلى مجموعات من 5 لتتوافق مع سعة صورة السلة
         val chunks = deals.chunked(5)
         val shotsCount = chunks.size
         
@@ -436,8 +432,9 @@ class DealScannerService : AccessibilityService() {
             for (i in 0 until shotsCount) {
                 val bitmap = takeScreenshotSync()
                 if (bitmap != null) {
-                    val topCrop = (bitmap.height * 0.15).toInt()
-                    val bottomCrop = (bitmap.height * 0.15).toInt()
+                    // قص دقيق بنسبة 21% من الأعلى و 19% من الأسفل لإخفاء البانرات وإبقاء المنتجات الـ 5 فقط
+                    val topCrop = (bitmap.height * 0.21).toInt()
+                    val bottomCrop = (bitmap.height * 0.19).toInt()
                     val croppedHeight = bitmap.height - topCrop - bottomCrop
                     
                     val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, croppedHeight)
@@ -449,8 +446,10 @@ class DealScannerService : AccessibilityService() {
                 }
                 
                 if (i < shotsCount - 1) {
-                    swipeUp(0.8f, 0.2f)
-                    Thread.sleep(1500)
+                    // سحب بطيء جداً (Drag) ومحسوب من 78% إلى 22% لمدة 1.2 ثانية.
+                    // هذا السحب ينقل القائمة بالضبط صفحة واحدة للأسفل بدون أي تدحرج (Fling)
+                    swipeUp(0.78f, 0.22f, 1200L)
+                    Thread.sleep(2000)
                 }
             }
             
@@ -578,13 +577,14 @@ class DealScannerService : AccessibilityService() {
         } catch (e: Exception) {}
     }
 
-    private fun swipeUp(startFactor: Float = 0.8f, endFactor: Float = 0.4f) {
+    // === تعديل دالة swipeUp لتقبل مُعامل الزمن للتحكم في السرعة ومنع التدحرج ===
+    private fun swipeUp(startFactor: Float, endFactor: Float, durationMs: Long) {
         val displayMetrics = resources.displayMetrics
         val path = Path().apply {
             moveTo(displayMetrics.widthPixels / 2f, displayMetrics.heightPixels * startFactor)
             lineTo(displayMetrics.widthPixels / 2f, displayMetrics.heightPixels * endFactor)
         }
-        dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 450)).build(), null, null)
+        dispatchGesture(GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, durationMs)).build(), null, null)
     }
 
     private fun findNodeByText(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
