@@ -74,7 +74,6 @@ class DealScannerService : AccessibilityService() {
         addLog("⏳ تم فتح التطبيق.. ننتظر 15 ثانية للتحميل...")
         Thread.sleep(15000) 
 
-        // === 1. مسح السلة أولاً قبل البدء ===
         val initialCartNode = findNodeByText(rootInActiveWindow, "السلة") ?: findNodeByText(rootInActiveWindow, "Cart")
         if (initialCartNode != null) {
             addLog("🗑️ جاري فتح السلة لمسح المنتجات القديمة...")
@@ -120,11 +119,9 @@ class DealScannerService : AccessibilityService() {
                 addLog("ℹ️ لم يظهر زر مسح الكل الرئيسي؛ السلة قد تكون فارغة بالفعل.")
             }
             
-            // محاكاة زر الرجوع للخلف للعودة للصفحة الرئيسية
             performGlobalAction(GLOBAL_ACTION_BACK)
             Thread.sleep(3000)
         }
-        // ===================================
 
         val rootNode = rootInActiveWindow
         if (rootNode == null) {
@@ -151,6 +148,27 @@ class DealScannerService : AccessibilityService() {
         clickNodeSafely(dealsNode) 
         Thread.sleep(6000)
 
+        // === استرجاع ذاكرة المنتجات المرسلة وتجهيزها ===
+        val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
+        val cooldownMillis = cooldownHours * 60 * 60 * 1000L
+        val historyStr = prefs.getString("PRODUCTS_HISTORY", "") ?: ""
+        val historyMap = mutableMapOf<String, Long>()
+        val currentTime = System.currentTimeMillis()
+
+        if (historyStr.isNotEmpty()) {
+            historyStr.split("||").forEach { entry ->
+                val parts = entry.split("::")
+                if (parts.size == 2) {
+                    val name = parts[0]
+                    val time = parts[1].toLongOrNull() ?: 0L
+                    // الاحتفاظ بالمنتجات التي لم تتجاوز فترة التبريد فقط
+                    if (currentTime - time < cooldownMillis) {
+                        historyMap[name] = time
+                    }
+                }
+            }
+        }
+
         val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
         val foundDeals = mutableListOf<String>()
         val processedProducts = mutableSetOf<String>()
@@ -164,7 +182,7 @@ class DealScannerService : AccessibilityService() {
             
             val currentTextCount = visibleNodes.map { it.text }.distinct().size
             
-            analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts)
+            analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
             Thread.sleep(1200)
 
             if (currentTextCount == previousTextCount) {
@@ -187,7 +205,7 @@ class DealScannerService : AccessibilityService() {
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
-            addLog("🔥 تم العثور على ${foundDeals.size} منتجات وتم تنفيذ محاولة نقر عليها.")
+            addLog("🔥 تم العثور على ${foundDeals.size} منتجات جديدة وتم تنفيذ محاولة نقر عليها.")
             
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals)
@@ -195,7 +213,7 @@ class DealScannerService : AccessibilityService() {
                 sendChunksAsText(token, chatId, foundDeals.chunked(6))
             }
         } else {
-            addLog("📉 لم يتم العثور على عروض مناسبة.")
+            addLog("📉 لم يتم العثور على عروض مناسبة أو جميع العروض تم إرسالها خلال فترة $cooldownHours ساعات الماضية.")
         }
     }
 
@@ -217,7 +235,10 @@ class DealScannerService : AccessibilityService() {
         nodesList: List<NodeData>, 
         minDiscount: Int, 
         deals: MutableList<String>, 
-        processedProducts: MutableSet<String>
+        processedProducts: MutableSet<String>,
+        historyMap: MutableMap<String, Long>,
+        cooldownMillis: Long,
+        prefs: SharedPreferences
     ) {
         val numRegex = Regex("^[0-9]{1,6}(?:\\.[0-9]{1,2})?$")
         val uniqueNodes = nodesList.distinctBy { it.text }
@@ -229,14 +250,14 @@ class DealScannerService : AccessibilityService() {
             if (dualPriceMatch != null) {
                 val p1 = dualPriceMatch.groupValues[1].toDoubleOrNull() ?: continue
                 val p2 = dualPriceMatch.groupValues[2].toDoubleOrNull() ?: continue
-                processDealNode(p1, p2, i + 1, uniqueNodes, minDiscount, deals, processedProducts, current.node)
+                processDealNode(p1, p2, i + 1, uniqueNodes, minDiscount, deals, processedProducts, current.node, historyMap, cooldownMillis, prefs)
                 continue
             }
 
             if (numRegex.matches(current.text) && i + 1 < uniqueNodes.size && numRegex.matches(uniqueNodes[i+1].text)) {
                 val p1 = current.text.toDoubleOrNull() ?: continue
                 val p2 = uniqueNodes[i+1].text.toDoubleOrNull() ?: continue
-                processDealNode(p1, p2, i + 2, uniqueNodes, minDiscount, deals, processedProducts, current.node)
+                processDealNode(p1, p2, i + 2, uniqueNodes, minDiscount, deals, processedProducts, current.node, historyMap, cooldownMillis, prefs)
             }
         }
     }
@@ -266,7 +287,10 @@ class DealScannerService : AccessibilityService() {
         minDiscount: Int, 
         deals: MutableList<String>, 
         processed: MutableSet<String>, 
-        priceNode: AccessibilityNodeInfo
+        priceNode: AccessibilityNodeInfo,
+        historyMap: MutableMap<String, Long>,
+        cooldownMillis: Long,
+        prefs: SharedPreferences
     ) {
         val oldPrice = maxOf(p1, p2)
         val newPrice = minOf(p1, p2)
@@ -279,7 +303,14 @@ class DealScannerService : AccessibilityService() {
                     uniqueNodes[nameIdx].text
                 } else "منتج مميز"
 
+                // تخطي إذا تمت معالجته في السحبة الحالية
                 if (processed.contains(productName)) return
+                
+                // === فحص فترة التبريد (COOLDOWN) ===
+                val lastSentTime = historyMap[productName]
+                if (lastSentTime != null && (System.currentTimeMillis() - lastSentTime) < cooldownMillis) {
+                    return // المنتج ما زال في فترة التبريد، تجاهله
+                }
                 
                 try {
                     val productCard = findProductCard(priceNode)
@@ -293,10 +324,20 @@ class DealScannerService : AccessibilityService() {
                         addedItemsCount++
                     }
                     
-                    val cleanName = productName.replace("\n", " ").trim()
+                    var cleanName = productName.replace("\n", " ").trim()
+                    // تحويل الصيغة مثل 3x أو 5X إلى 3 قطع
+                    cleanName = cleanName.replace(Regex("(?i)(\\d+)\\s*x\\s*"), "$1 قطع ")
+                    cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
+                    
                     val dealText = "$cleanName ب $newPrice جنيه بخصم $discountPercent%"
                     deals.add(dealText)
+                    
                     processed.add(productName)
+                    
+                    // تحديث تاريخ الإرسال للمنتج في الذاكرة
+                    historyMap[productName] = System.currentTimeMillis()
+                    val newHistoryStr = historyMap.map { "${it.key}::${it.value}" }.joinToString("||")
+                    prefs.edit().putString("PRODUCTS_HISTORY", newHistoryStr).apply()
                     
                 } catch (e: Exception) {
                     addLog("❌ خطأ إضافة $productName: ${e.message}")
@@ -551,10 +592,6 @@ class DealScannerService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    // ==========================================
-    // دوال مساعدة لعملية مسح السلة (تحديثات الخبير)
-    // ==========================================
-
     private fun normalizedText(node: AccessibilityNodeInfo): String {
         return (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
     }
@@ -598,7 +635,6 @@ class DealScannerService : AccessibilityService() {
             findClickableParent(textNode) ?: textNode.takeIf { it.isClickable && it.isEnabled && it.isVisibleToUser }
         }.filter { buttonNode ->
             val rect = getRect(buttonNode)
-            // التأكد من أن الزر يقع في النصف السفلي لتجاهل زر الخلفية الموجود بالأعلى
             rect.centerY() > screenHeight * 0.58 &&
             rect.width() > resources.displayMetrics.widthPixels * 0.45 &&
             buttonNode.isVisibleToUser &&
@@ -680,7 +716,6 @@ class DealScannerService : AccessibilityService() {
         
         if (emptyText != null) return true
         
-        // فحص بديل: إذا اختفى زر مسح الكل الرئيسي تماماً من الشاشة فهذا مؤشر على تفريغ السلة
         val clearBtn = findNodeByText(root, "مسح الكل") ?: findNodeByText(root, "Clear All")
         return clearBtn == null
     }
