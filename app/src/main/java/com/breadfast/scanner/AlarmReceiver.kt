@@ -9,32 +9,37 @@ class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val prefs = context.getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
         
+        // 1. التحقق من أن البوت مفعل بشكل عام
         if (!prefs.getBoolean("IS_ACTIVE", false)) return
+
+        // === التعديل الجديد: منع التداخل ===
+        // 2. التحقق مما إذا كانت هناك دورة سابقة ما زالت تعمل
+        if (prefs.getBoolean("IS_AUTO_RUNNING", false)) {
+            addLog(context, "⚠️ المنبه رن، لكن هناك دورة مسح ما زالت تعمل. سيتم تجاهل الموعد الحالي.")
+            return
+        }
+        // ===================================
 
         val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: "com.breadfast.application"
         addLog(context, "⏰ المنبه رن! محاولة فتح: $targetApp")
 
-        // إعطاء تأشيرة الدخول للبوت ليعمل هذه المرة فقط
+        // إعطاء تأشيرة الدخول للبوت ليعمل هذه المرة
         prefs.edit().putBoolean("IS_AUTO_RUNNING", true).apply()
 
         val pm = context.packageManager
         val launchIntent = pm.getLaunchIntentForPackage(targetApp)
         
         if (launchIntent != null) {
-            // === تم تعديل الـ Flags هنا لضمان فتح التطبيق من الصفر (الرئيسية) ===
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             
             try {
-                // === إضافة كود إضاءة الشاشة (WakeLock) هنا ===
                 val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
                 @Suppress("DEPRECATION")
                 val wakeLock = powerManager.newWakeLock(
                     PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
                     "BreadfastBot::WakeLock"
                 )
-                // إضاءة الشاشة لمدة 10 ثوانٍ لضمان استجابة التطبيق وخدمة الوصول
                 wakeLock.acquire(10000)
-                // ===============================================
 
                 context.startActivity(launchIntent)
                 addLog(context, "🚀 تم إرسال أمر الفتح بنجاح (وضع الأتمتة مفعل).")
