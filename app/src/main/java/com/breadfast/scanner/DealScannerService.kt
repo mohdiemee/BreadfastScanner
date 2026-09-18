@@ -86,18 +86,25 @@ class DealScannerService : AccessibilityService() {
                 clickNodeSafely(clearAllNode)
                 Thread.sleep(2000) // انتظار ظهور النافذة المنبثقة للتأكيد
                 
-                // البحث عن زر التأكيد (مسح الكل) في النافذة المنبثقة
-                val confirmClearNodes = rootInActiveWindow?.findAccessibilityNodeInfosByText("مسح الكل")
-                val confirmClearNodesEn = rootInActiveWindow?.findAccessibilityNodeInfosByText("Clear All")
+                // === التعديل لحل مشكلة الزر السفلي ===
+                // تجميع كل الأزرار التي تحمل نفس النص لاختيار الزر الموجود بأسفل الشاشة
+                val allClearNodes = mutableListOf<AccessibilityNodeInfo>()
+                rootInActiveWindow?.findAccessibilityNodeInfosByText("مسح الكل")?.let { allClearNodes.addAll(it) }
+                rootInActiveWindow?.findAccessibilityNodeInfosByText("Clear All")?.let { allClearNodes.addAll(it) }
                 
-                val finalConfirmNode = confirmClearNodes?.lastOrNull() ?: confirmClearNodesEn?.lastOrNull()
+                // ترتيب الأزرار وتحديد الزر صاحب أكبر إحداثي رأسي (الموجود في القاع)
+                val bottomConfirmNode = allClearNodes.maxByOrNull { node ->
+                    val rect = Rect()
+                    node.getBoundsInScreen(rect)
+                    rect.bottom
+                }
                 
-                if (finalConfirmNode != null) {
-                    clickNodeSafely(finalConfirmNode)
+                if (bottomConfirmNode != null) {
+                    clickNodeSafely(bottomConfirmNode)
                     Thread.sleep(2000)
-                    addLog("✅ تم تأكيد مسح السلة بنجاح.")
+                    addLog("✅ تم تأكيد مسح السلة بنجاح (النقر على الزر السفلي).")
                 } else {
-                    addLog("⚠️ لم يظهر زر تأكيد المسح.")
+                    addLog("⚠️ لم يظهر زر تأكيد المسح السفلي.")
                 }
             }
             
@@ -416,7 +423,6 @@ class DealScannerService : AccessibilityService() {
                     val prefix = if (i == 0) "عروض ممتازة علي بريدفاست\n" else "ودول كمان\n"
                     val caption = prefix + chunk.joinToString("\n\n")
                     
-                    // تأمين الحد الأقصى لحروف تيليجرام
                     val finalCaption = if (caption.length > 1024) caption.substring(0, 1020) + "..." else caption
                     
                     val imageBytes = screenshots.getOrNull(i)
@@ -496,7 +502,6 @@ class DealScannerService : AccessibilityService() {
             outputStream.writeBytes("Content-Disposition: form-data; name=\"caption\"\r\n\r\n")
             outputStream.write((caption + "\r\n").toByteArray(Charsets.UTF_8))
 
-            // إضافة أزرار النشر (Inline Keyboard)
             outputStream.writeBytes("--$boundary\r\n")
             outputStream.writeBytes("Content-Disposition: form-data; name=\"reply_markup\"\r\n\r\n")
             outputStream.write((replyMarkup + "\r\n").toByteArray(Charsets.UTF_8))
