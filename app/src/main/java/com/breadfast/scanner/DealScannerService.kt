@@ -64,7 +64,16 @@ class DealScannerService : AccessibilityService() {
                     prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
                     Thread.sleep(2000)
                     performGlobalAction(GLOBAL_ACTION_HOME)
-                    addLog("🏠 تم الإغلاق والعودة للشاشة الرئيسية بأمان.")
+                    Thread.sleep(1500)
+                    // === إغلاق التطبيق نهائياً من الذاكرة (RAM) ===
+                    try {
+                        val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                        am.killBackgroundProcesses(targetApp)
+                        addLog("🏠 تم الإغلاق ومسح التطبيق من الذاكرة بنجاح.")
+                    } catch (e: Exception) {
+                        addLog("⚠️ تم الرجوع للرئيسية (تعذر مسح الذاكرة).")
+                    }
+                    // ===============================================
                 }
             }
         }
@@ -133,7 +142,6 @@ class DealScannerService : AccessibilityService() {
         var scrollAttempts = 0
         
         while (dealsNode == null && scrollAttempts < 4) {
-            // سحبة قصيرة للبحث عن أيقونة العروض
             swipeUp(0.8f, 0.5f)
             Thread.sleep(1500)
             dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
@@ -175,7 +183,8 @@ class DealScannerService : AccessibilityService() {
         var emptyScrolls = 0
         var totalScrolls = 0
         
-        while (totalScrolls < 100) {
+        // === تم زيادة الحد الأقصى للسكرول إلى 1000 ===
+        while (totalScrolls < 1000) {
             val visibleNodes = mutableListOf<NodeData>()
             extractNodes(rootInActiveWindow, visibleNodes)
             
@@ -196,7 +205,6 @@ class DealScannerService : AccessibilityService() {
             previousTextCount = currentTextCount
             totalScrolls++
             
-            // سحبة قصيرة جداً (من 80% إلى 50%) لضمان عدم تفويت أي منتجات أثناء السكرول[cite: 7]
             swipeUp(0.8f, 0.5f)
             Thread.sleep(1500) 
         }
@@ -210,7 +218,6 @@ class DealScannerService : AccessibilityService() {
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals)
             } else {
-                // تقسيم المنتجات إلى مجموعات من 5
                 sendChunksAsText(token, chatId, foundDeals.chunked(5))
             }
         } else {
@@ -413,7 +420,6 @@ class DealScannerService : AccessibilityService() {
         addLog("🛒 جاري فتح السلة لتصوير التقرير...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
-        // تقسيم المنتجات إلى مجموعات من 5 بدلاً من 6 لتتوافق مع سعة صورة السلة
         val chunks = deals.chunked(5)
         val shotsCount = chunks.size
         
@@ -439,7 +445,6 @@ class DealScannerService : AccessibilityService() {
                 }
                 
                 if (i < shotsCount - 1) {
-                    // سحبة أطول قليلاً داخل السلة (من 80% لـ 20%) لتجاوز الـ 5 منتجات المصورة وجلب منتجات جديدة
                     swipeUp(0.8f, 0.2f)
                     Thread.sleep(1500)
                 }
@@ -569,7 +574,6 @@ class DealScannerService : AccessibilityService() {
         } catch (e: Exception) {}
     }
 
-    // إضافة معاملات (Parameters) للتحكم في طول السحبة لكل حالة
     private fun swipeUp(startFactor: Float = 0.8f, endFactor: Float = 0.4f) {
         val displayMetrics = resources.displayMetrics
         val path = Path().apply {
