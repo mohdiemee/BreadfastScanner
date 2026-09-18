@@ -30,6 +30,8 @@ class DealScannerService : AccessibilityService() {
     private var lastScanTime = 0L
     private var addedItemsCount = 0
 
+    private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
+
     private fun addLog(message: String) {
         val prefs = getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
         val currentLogs = prefs.getString("APP_LOGS", "") ?: ""
@@ -71,6 +73,26 @@ class DealScannerService : AccessibilityService() {
     private fun runAutomation(prefs: SharedPreferences) {
         addLog("⏳ تم فتح التطبيق.. ننتظر 15 ثانية للتحميل...")
         Thread.sleep(15000) 
+
+        // === 1. مسح السلة أولاً قبل البدء ===
+        val initialCartNode = findNodeByText(rootInActiveWindow, "السلة") ?: findNodeByText(rootInActiveWindow, "Cart")
+        if (initialCartNode != null) {
+            addLog("🗑️ جاري فتح السلة لمسح المنتجات القديمة...")
+            clickNodeSafely(initialCartNode)
+            Thread.sleep(5000)
+            
+            val clearAllNode = findNodeByText(rootInActiveWindow, "مسح الكل") ?: findNodeByText(rootInActiveWindow, "Clear All")
+            if (clearAllNode != null) {
+                clickNodeSafely(clearAllNode)
+                Thread.sleep(2000)
+                addLog("✅ تم مسح السلة بنجاح.")
+            }
+            
+            // محاكاة زر الرجوع للخلف للعودة للصفحة الرئيسية
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            Thread.sleep(3000)
+        }
+        // ===================================
 
         val rootNode = rootInActiveWindow
         if (rootNode == null) {
@@ -134,12 +156,11 @@ class DealScannerService : AccessibilityService() {
 
         if (foundDeals.isNotEmpty()) {
             addLog("🔥 تم العثور على ${foundDeals.size} منتجات وتم تنفيذ محاولة نقر عليها.")
-            val message = "🛒 **تقرير المنتجات المطابقة:**\n\n" + foundDeals.joinToString("\n---\n")
             
             if (Build.VERSION.SDK_INT >= 30) {
-                openCartAndSendReport(token, chatId, message)
+                openCartAndSendReport(token, chatId, foundDeals)
             } else {
-                sendLongTelegramMessage(token, chatId, message)
+                sendChunksAsText(token, chatId, foundDeals.chunked(6))
             }
         } else {
             addLog("📉 لم يتم العثور على عروض مناسبة.")
@@ -240,8 +261,8 @@ class DealScannerService : AccessibilityService() {
                         addedItemsCount++
                     }
                     
-                    val status = if (clickSuccess) "✅ (محاولة إضافة)" else "⚠️ (فشل النقر)"
-                    val dealText = "$status **$productName**\n📉 الخصم: $discountPercent%\n💰 $newPrice بدلاً من $oldPrice"
+                    val cleanName = productName.replace("\n", " ").trim()
+                    val dealText = "$cleanName ب $newPrice جنيه بخصم $discountPercent%"
                     deals.add(dealText)
                     processed.add(productName)
                     
@@ -341,20 +362,18 @@ class DealScannerService : AccessibilityService() {
     }
 
     @TargetApi(30)
-    private fun openCartAndSendReport(token: String, chatId: String, message: String) {
-        addLog("🛒 جاري فتح السلة...")
+    private fun openCartAndSendReport(token: String, chatId: String, deals: List<String>) {
+        addLog("🛒 جاري فتح السلة لتصوير التقرير...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
+        
+        val chunks = deals.chunked(6)
+        val shotsCount = chunks.size
         
         if (cartNode != null) {
             clickNodeSafely(cartNode)
             Thread.sleep(5000) 
             
             val screenshots = mutableListOf<ByteArray>()
-            val shotsCount = when {
-                addedItemsCount <= 7 -> 1
-                addedItemsCount in 8..12 -> 2
-                else -> 3
-            }
             
             for (i in 0 until shotsCount) {
                 val bitmap = takeScreenshotSync()
@@ -379,18 +398,39 @@ class DealScannerService : AccessibilityService() {
             
             if (screenshots.isNotEmpty()) {
                 addLog("📸 تم التصوير. جاري الرفع...")
-                for ((index, imageBytes) in screenshots.withIndex()) {
-                    val shortCaption = if (index == 0) "🛒 تم العثور على عروض وإضافتها للسلة." else "تابع صور السلة..."
-                    sendTelegramPhotoMultipart(token, chatId, imageBytes, shortCaption)
+                for (i in chunks.indices) {
+                    val chunk = chunks[i]
+                    val prefix = if (i == 0) "عروض ممتازة علي بريدفاست\n" else "ودول كمان\n"
+                    val caption = prefix + chunk.joinToString("\n\n")
+                    
+                    // تأمين الحد الأقصى لحروف تيليجرام
+                    val finalCaption = if (caption.length > 1024) caption.substring(0, 1020) + "..." else caption
+                    
+                    val imageBytes = screenshots.getOrNull(i)
+                    if (imageBytes != null) {
+                        sendTelegramPhotoMultipart(token, chatId, imageBytes, finalCaption)
+                    } else {
+                        sendTelegramMessage(token, chatId, finalCaption)
+                    }
                 }
-                sendLongTelegramMessage(token, chatId, message)
             } else {
-                sendLongTelegramMessage(token, chatId, message)
+                sendChunksAsText(token, chatId, chunks)
             }
             
         } else {
             addLog("❌ زر السلة غير موجود.")
-            sendLongTelegramMessage(token, chatId, message)
+            sendChunksAsText(token, chatId, chunks)
+        }
+    }
+
+    private fun sendChunksAsText(token: String, chatId: String, chunks: List<List<String>>) {
+        for (i in chunks.indices) {
+            val chunk = chunks[i]
+            val prefix = if (i == 0) "عروض ممتازة علي بريدفاست\n" else "ودول كمان\n"
+            val text = prefix + chunk.joinToString("\n\n")
+            val finalText = if (text.length > 1024) text.substring(0, 1020) + "..." else text
+            sendTelegramMessage(token, chatId, finalText)
+            Thread.sleep(700)
         }
     }
 
@@ -443,6 +483,11 @@ class DealScannerService : AccessibilityService() {
             outputStream.writeBytes("Content-Disposition: form-data; name=\"caption\"\r\n\r\n")
             outputStream.write((caption + "\r\n").toByteArray(Charsets.UTF_8))
 
+            // إضافة أزرار النشر (Inline Keyboard)
+            outputStream.writeBytes("--$boundary\r\n")
+            outputStream.writeBytes("Content-Disposition: form-data; name=\"reply_markup\"\r\n\r\n")
+            outputStream.write((replyMarkup + "\r\n").toByteArray(Charsets.UTF_8))
+
             outputStream.writeBytes("--$boundary\r\n")
             outputStream.writeBytes("Content-Disposition: form-data; name=\"photo\"; filename=\"cart.jpg\"\r\n")
             outputStream.writeBytes("Content-Type: image/jpeg\r\n\r\n")
@@ -454,20 +499,10 @@ class DealScannerService : AccessibilityService() {
             outputStream.close()
             
             val responseCode = connection.responseCode
-            val responseText = try {
-                if (responseCode in 200..299) {
-                    connection.inputStream.bufferedReader().use { it.readText() }
-                } else {
-                    connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "لا توجد تفاصيل للخطأ"
-                }
-            } catch (e: Exception) {
-                "تعذر قراءة الاستجابة"
-            }
-
             if (responseCode !in 200..299) {
-                addLog("❌ فشل الرفع: $responseCode | $responseText")
+                addLog("❌ فشل الرفع: $responseCode")
             } else {
-                addLog("✅ تم رفع الصورة بنجاح.")
+                addLog("✅ تم رفع الصورة والرسالة بنجاح.")
             }
             connection.disconnect()
         } catch (e: Exception) {
@@ -475,19 +510,11 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    private fun sendLongTelegramMessage(token: String, chatId: String, text: String) {
-        val maxLength = 3500
-        text.chunked(maxLength).forEachIndexed { index, part ->
-            val finalPart = if (index == 0) part else "📄 تابع التقرير:\n\n$part"
-            sendTelegramMessage(token, chatId, finalPart)
-            Thread.sleep(700)
-        }
-    }
-
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
         try {
             val encodedText = URLEncoder.encode(text, "UTF-8")
-            val url = URL("https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$encodedText&parse_mode=Markdown")
+            val encodedMarkup = URLEncoder.encode(replyMarkup, "UTF-8")
+            val url = URL("https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$encodedText&reply_markup=$encodedMarkup")
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
             connection.inputStream.reader().readText()
