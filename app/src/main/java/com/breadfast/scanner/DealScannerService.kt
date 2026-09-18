@@ -60,7 +60,6 @@ class DealScannerService : AccessibilityService() {
                 } finally {
                     isScanning = false
                     prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
-                    // العودة الإجبارية للشاشة الرئيسية في كل الحالات لمنع التعليق
                     Thread.sleep(2000)
                     performGlobalAction(GLOBAL_ACTION_HOME)
                     addLog("🏠 تم الإغلاق والعودة للشاشة الرئيسية بأمان.")
@@ -95,7 +94,7 @@ class DealScannerService : AccessibilityService() {
         }
 
         addLog("🎯 تم الدخول لصفحة العروض، جاري المسح...")
-        tapNodeCoordinate(dealsNode) // النقر الهندسي المضمون بدلاً من النقر البرمجي
+        tapNodeCoordinate(dealsNode) 
         Thread.sleep(6000)
 
         val allNodes = mutableListOf<NodeData>()
@@ -184,7 +183,7 @@ class DealScannerService : AccessibilityService() {
         return deals
     }
 
-    private fun processDealNode(p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, deals: MutableList<String>, processed: MutableSetOf<String>, priceNode: AccessibilityNodeInfo) {
+    private fun processDealNode(p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, deals: MutableList<String>, processed: MutableSet<String>, priceNode: AccessibilityNodeInfo) {
         val oldPrice = maxOf(p1, p2)
         val newPrice = minOf(p1, p2)
 
@@ -199,17 +198,16 @@ class DealScannerService : AccessibilityService() {
                 if (processed.contains(productName)) return
                 
                 try {
-                    // نصعد لكارت المنتج للبحث عن زر + ثم النقر عليه بالإحداثيات
-                    var parent = priceNode.parent
+                    var currentParent = priceNode.parent
                     var clickSuccess = false
                     for (level in 0..4) { 
-                        if (parent == null) break
-                        if (forceClickAddButton(parent)) {
+                        val p = currentParent ?: break
+                        if (forceClickAddButton(p)) {
                             clickSuccess = true
                             addedItemsCount++
                             break
                         }
-                        parent = parent.parent
+                        currentParent = p.parent
                     }
                     
                     val status = if (clickSuccess) "✅" else "⚠️ (فشل النقر)"
@@ -224,7 +222,6 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    // خوارزمية البحث عن زر (+) والنقر عليه إجبارياً بالإحداثيات
     private fun forceClickAddButton(node: AccessibilityNodeInfo): Boolean {
         val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
         if (text == "+" || text.contains("Add", true) || text.contains("أضف", true)) {
@@ -238,7 +235,6 @@ class DealScannerService : AccessibilityService() {
         return false
     }
 
-    // النقر الهندسي المضمون (Gesture Tap)
     private fun tapNodeCoordinate(node: AccessibilityNodeInfo): Boolean {
         val rect = Rect()
         node.getBoundsInScreen(rect)
@@ -262,7 +258,7 @@ class DealScannerService : AccessibilityService() {
         
         if (cartNode != null) {
             tapNodeCoordinate(cartNode)
-            Thread.sleep(5000) // وقت لتحميل السلة
+            Thread.sleep(5000) 
             
             val screenshots = mutableListOf<ByteArray>()
             val shotsCount = when {
