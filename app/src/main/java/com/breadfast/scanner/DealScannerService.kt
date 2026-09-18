@@ -164,7 +164,7 @@ class DealScannerService : AccessibilityService() {
         nodesList: List<NodeData>, 
         minDiscount: Int, 
         deals: MutableList<String>, 
-        processedProducts: MutableSetOf<String>
+        processedProducts: MutableSet<String>
     ) {
         val numRegex = Regex("^[0-9]{1,6}(?:\\.[0-9]{1,2})?$")
         val uniqueNodes = nodesList.distinctBy { it.text }
@@ -212,7 +212,7 @@ class DealScannerService : AccessibilityService() {
         uniqueNodes: List<NodeData>, 
         minDiscount: Int, 
         deals: MutableList<String>, 
-        processed: MutableSetOf<String>, 
+        processed: MutableSet<String>, 
         priceNode: AccessibilityNodeInfo
     ) {
         val oldPrice = maxOf(p1, p2)
@@ -367,6 +367,8 @@ class DealScannerService : AccessibilityService() {
                     val stream = ByteArrayOutputStream()
                     croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                     screenshots.add(stream.toByteArray())
+                } else {
+                    addLog("⚠️ فشل التقاط الصورة رقم ${i+1}")
                 }
                 
                 if (i < shotsCount - 1) {
@@ -452,10 +454,20 @@ class DealScannerService : AccessibilityService() {
             outputStream.close()
             
             val responseCode = connection.responseCode
+            val responseText = try {
+                if (responseCode in 200..299) {
+                    connection.inputStream.bufferedReader().use { it.readText() }
+                } else {
+                    connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "لا توجد تفاصيل للخطأ"
+                }
+            } catch (e: Exception) {
+                "تعذر قراءة الاستجابة"
+            }
+
             if (responseCode !in 200..299) {
-                addLog("❌ فشل رفع Telegram: $responseCode")
+                addLog("❌ فشل الرفع: $responseCode | $responseText")
             } else {
-                addLog("✅ تم رفع صورة السلة إلى Telegram.")
+                addLog("✅ تم رفع الصورة بنجاح.")
             }
             connection.disconnect()
         } catch (e: Exception) {
