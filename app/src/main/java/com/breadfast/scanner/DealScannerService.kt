@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Path
+import android.graphics.Rect
 import android.os.Build
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
@@ -55,10 +56,14 @@ class DealScannerService : AccessibilityService() {
                 try {
                     runAutomation(prefs)
                 } catch (e: Exception) {
-                    addLog("❌ خطأ غير متوقع: ${e.message}")
+                    addLog("❌ خطأ جسيم أوقف العملية: ${e.message}")
                 } finally {
                     isScanning = false
                     prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
+                    // العودة الإجبارية للشاشة الرئيسية في كل الحالات لمنع التعليق
+                    Thread.sleep(2000)
+                    performGlobalAction(GLOBAL_ACTION_HOME)
+                    addLog("🏠 تم الإغلاق والعودة للشاشة الرئيسية بأمان.")
                 }
             }
         }
@@ -70,8 +75,7 @@ class DealScannerService : AccessibilityService() {
 
         val rootNode = rootInActiveWindow
         if (rootNode == null) {
-            addLog("❌ لم نتمكن من قراءة الشاشة، قد يكون التطبيق معلقاً.")
-            performGlobalAction(GLOBAL_ACTION_HOME)
+            addLog("❌ الشاشة غير مقروءة.")
             return
         }
 
@@ -86,13 +90,12 @@ class DealScannerService : AccessibilityService() {
         }
 
         if (dealsNode == null) {
-            addLog("⚠️ لم يتم العثور على أيقونة العروض.")
-            performGlobalAction(GLOBAL_ACTION_HOME)
+            addLog("⚠️ أيقونة العروض غير موجودة.")
             return
         }
 
         addLog("🎯 تم الدخول لصفحة العروض، جاري المسح...")
-        clickNode(dealsNode)
+        tapNodeCoordinate(dealsNode) // النقر الهندسي المضمون بدلاً من النقر البرمجي
         Thread.sleep(6000)
 
         val allNodes = mutableListOf<NodeData>()
@@ -107,7 +110,7 @@ class DealScannerService : AccessibilityService() {
             if (currentTextCount == previousTextCount) {
                 emptyScrolls++
                 if (emptyScrolls >= 3) {
-                    addLog("🏁 تم الوصول لنهاية الصفحة.")
+                    addLog("🏁 نهاية قائمة العروض.")
                     break 
                 }
             } else {
@@ -127,22 +130,18 @@ class DealScannerService : AccessibilityService() {
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
-            addLog("🔥 تم العثور على ${foundDeals.size} عروض وإضافتها للسلة.")
-            val message = "🛒 **تمت الإضافة للسلة بنجاح:**\n\n" + foundDeals.joinToString("\n---\n")
+            addLog("🔥 تم العثور على ${foundDeals.size} منتجات وتمت محاولة إضافتها.")
+            val message = "🛒 **تقرير الإضافة للسلة:**\n\n" + foundDeals.joinToString("\n---\n")
             
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, message)
             } else {
-                addLog("⚠️ إصدار الأندرويد لديك لا يدعم تصوير الشاشة البرمجي.")
+                addLog("⚠️ النظام لا يدعم تصوير الشاشة.")
                 sendTelegramMessage(token, chatId, message)
             }
         } else {
-            addLog("📉 لم يتم العثور على خصومات مطابقة.")
+            addLog("📉 لم يتم العثور على عروض مناسبة.")
         }
-
-        Thread.sleep(2000)
-        addLog("🏠 جاري العودة للشاشة الرئيسية.")
-        performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
     private fun extractNodes(node: AccessibilityNodeInfo?, nodesList: MutableList<NodeData>) {
@@ -163,7 +162,6 @@ class DealScannerService : AccessibilityService() {
         val deals = mutableListOf<String>()
         val processedProducts = mutableSetOf<String>()
         val numRegex = Regex("^[0-9]{1,6}(?:\\.[0-9]{1,2})?$")
-        
         val uniqueNodes = nodesList.distinctBy { it.text }
 
         for (i in uniqueNodes.indices) {
@@ -186,7 +184,7 @@ class DealScannerService : AccessibilityService() {
         return deals
     }
 
-    private fun processDealNode(p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, deals: MutableList<String>, processed: MutableSet<String>, priceNode: AccessibilityNodeInfo) {
+    private fun processDealNode(p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, deals: MutableList<String>, processed: MutableSetOf<String>, priceNode: AccessibilityNodeInfo) {
         val oldPrice = maxOf(p1, p2)
         val newPrice = minOf(p1, p2)
 
@@ -201,11 +199,12 @@ class DealScannerService : AccessibilityService() {
                 if (processed.contains(productName)) return
                 
                 try {
+                    // نصعد لكارت المنتج للبحث عن زر + ثم النقر عليه بالإحداثيات
                     var parent = priceNode.parent
                     var clickSuccess = false
-                    for (level in 0..3) { 
+                    for (level in 0..4) { 
                         if (parent == null) break
-                        if (clickAddButtonInParent(parent)) {
+                        if (forceClickAddButton(parent)) {
                             clickSuccess = true
                             addedItemsCount++
                             break
@@ -213,7 +212,7 @@ class DealScannerService : AccessibilityService() {
                         parent = parent.parent
                     }
                     
-                    val status = if (clickSuccess) "✅ (تمت الإضافة)" else "⚠️ (فشل الضغط)"
+                    val status = if (clickSuccess) "✅" else "⚠️ (فشل النقر)"
                     val dealText = "$status **$productName**\n📉 الخصم: $discountPercent%\n💰 $newPrice بدلاً من $oldPrice"
                     deals.add(dealText)
                     processed.add(productName)
@@ -225,29 +224,45 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    private fun clickAddButtonInParent(node: AccessibilityNodeInfo): Boolean {
-        if (node.isClickable) {
-            val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
-            if (text.contains("+") || text.contains("Add", true) || text.contains("أضف", true) || text.isEmpty()) {
-                node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                return true
-            }
+    // خوارزمية البحث عن زر (+) والنقر عليه إجبارياً بالإحداثيات
+    private fun forceClickAddButton(node: AccessibilityNodeInfo): Boolean {
+        val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
+        if (text == "+" || text.contains("Add", true) || text.contains("أضف", true)) {
+            return tapNodeCoordinate(node)
         }
+        
         for (i in 0 until node.childCount) {
             val child = node.getChild(i)
-            if (child != null && clickAddButtonInParent(child)) return true
+            if (child != null && forceClickAddButton(child)) return true
         }
         return false
     }
 
+    // النقر الهندسي المضمون (Gesture Tap)
+    private fun tapNodeCoordinate(node: AccessibilityNodeInfo): Boolean {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        if (rect.isEmpty) return false
+
+        val x = rect.centerX().toFloat()
+        val y = rect.centerY().toFloat()
+
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 50))
+            .build()
+        dispatchGesture(gesture, null, null)
+        return true
+    }
+
     @TargetApi(30)
     private fun openCartAndSendReport(token: String, chatId: String, message: String) {
-        addLog("🛒 جاري البحث عن السلة لفتحها...")
+        addLog("🛒 جاري فتح السلة...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
         if (cartNode != null) {
-            clickNode(cartNode)
-            Thread.sleep(4000) 
+            tapNodeCoordinate(cartNode)
+            Thread.sleep(5000) // وقت لتحميل السلة
             
             val screenshots = mutableListOf<ByteArray>()
             val shotsCount = when {
@@ -267,6 +282,8 @@ class DealScannerService : AccessibilityService() {
                     val stream = ByteArrayOutputStream()
                     croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                     screenshots.add(stream.toByteArray())
+                } else {
+                    addLog("⚠️ فشل التقاط الصورة رقم ${i+1}")
                 }
                 
                 if (i < shotsCount - 1) {
@@ -276,7 +293,7 @@ class DealScannerService : AccessibilityService() {
             }
             
             if (screenshots.isNotEmpty()) {
-                addLog("📸 تم التقاط ${screenshots.size} صور للسلة. جاري الرفع لتليجرام...")
+                addLog("📸 تم التصوير. جاري الرفع...")
                 for ((index, imageBytes) in screenshots.withIndex()) {
                     val caption = if (index == 0) message else "تابع صور السلة..."
                     sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
@@ -286,7 +303,7 @@ class DealScannerService : AccessibilityService() {
             }
             
         } else {
-            addLog("❌ لم يتم العثور على أيقونة السلة.")
+            addLog("❌ زر السلة غير موجود.")
             sendTelegramMessage(token, chatId, message)
         }
     }
@@ -297,21 +314,26 @@ class DealScannerService : AccessibilityService() {
         val latch = CountDownLatch(1)
         val executor = Executors.newSingleThreadExecutor()
         
-        takeScreenshot(Display.DEFAULT_DISPLAY, executor, object : AccessibilityService.TakeScreenshotCallback {
-            override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
-                val hwBuffer = screenshot.hardwareBuffer
-                val colorSpace = screenshot.colorSpace
-                bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
-                hwBuffer.close()
-                latch.countDown()
-            }
-            override fun onFailure(errorCode: Int) {
-                addLog("❌ فشل التقاط الشاشة، كود: $errorCode")
-                latch.countDown()
-            }
-        })
-        latch.await(5, TimeUnit.SECONDS)
-        executor.shutdown()
+        try {
+            takeScreenshot(Display.DEFAULT_DISPLAY, executor, object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                    val hwBuffer = screenshot.hardwareBuffer
+                    val colorSpace = screenshot.colorSpace
+                    bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                    hwBuffer.close()
+                    latch.countDown()
+                }
+                override fun onFailure(errorCode: Int) {
+                    addLog("❌ خطأ التقاط الشاشة: $errorCode (تأكد من تحديث ملف XML)")
+                    latch.countDown()
+                }
+            })
+            latch.await(5, TimeUnit.SECONDS)
+        } catch (e: Exception) {
+            addLog("❌ فشل عملية التصوير: ${e.message}")
+        } finally {
+            executor.shutdown()
+        }
         return bitmap
     }
 
@@ -345,11 +367,10 @@ class DealScannerService : AccessibilityService() {
             outputStream.flush()
             outputStream.close()
             
-            val responseCode = connection.responseCode
-            if (responseCode != 200) addLog("❌ فشل رفع الصورة. كود: $responseCode")
+            if (connection.responseCode != 200) addLog("❌ فشل الرفع. كود: ${connection.responseCode}")
             connection.disconnect()
         } catch (e: Exception) {
-            addLog("❌ خطأ أثناء رفع الصورة: ${e.message}")
+            addLog("❌ خطأ رفع الصورة: ${e.message}")
         }
     }
 
@@ -361,9 +382,7 @@ class DealScannerService : AccessibilityService() {
             connection.requestMethod = "GET"
             connection.inputStream.reader().readText()
             connection.disconnect()
-        } catch (e: Exception) {
-            addLog("❌ خطأ رسالة التليجرام: ${e.message}")
-        }
+        } catch (e: Exception) {}
     }
 
     private fun swipeUp() {
@@ -384,18 +403,6 @@ class DealScannerService : AccessibilityService() {
             if (result != null) return result
         }
         return null
-    }
-
-    private fun clickNode(node: AccessibilityNodeInfo?): Boolean {
-        var current = node
-        while (current != null) {
-            if (current.isClickable) {
-                current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                return true
-            }
-            current = current.parent
-        }
-        return false
     }
 
     override fun onInterrupt() {}
