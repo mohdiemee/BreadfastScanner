@@ -3,6 +3,7 @@ package com.breadfast.scanner
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -13,19 +14,12 @@ class DealScannerService : AccessibilityService() {
     private var isScanning = false
     private var lastScanTime = 0L
 
-    // دالة مخصصة لتسجيل الأحداث وعرضها في الواجهة
     private fun addLog(message: String) {
         val prefs = getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
         val currentLogs = prefs.getString("APP_LOGS", "") ?: ""
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-        // نحتفظ بآخر 50 سطراً فقط لعدم امتلاء الذاكرة
         val newLog = "[$time] $message\n$currentLogs".lines().take(50).joinToString("\n")
         prefs.edit().putString("APP_LOGS", newLog).apply()
-    }
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        addLog("✅ تم تشغيل الخدمة بنجاح وربطها بصلاحية Accessibility.")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -34,67 +28,97 @@ class DealScannerService : AccessibilityService() {
         val prefs = getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("IS_ACTIVE", false)) return
 
-        val packageName = event.packageName?.toString() ?: return
-
-        // سنقوم بالتسجيل فقط إذا تم فتح تطبيق بريدفاست
-        if (packageName == "com.breadfast.application") {
+        val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: ""
+        if (event.packageName?.toString() == targetApp) {
+            
             val currentTime = System.currentTimeMillis()
-            if (currentTime - lastScanTime < 5000 || isScanning) return
+            if (currentTime - lastScanTime < 8000 || isScanning) return 
             
             isScanning = true
             lastScanTime = currentTime
             
-            addLog("📱 تم رصد تطبيق بريدفاست! جاري معالجة الشاشة...")
+            addLog("📱 تم التعرّف على التطبيق! جاري قراءة العروض...")
 
             val rootNode = rootInActiveWindow
             if (rootNode != null) {
-                addLog("🔍 تم العثور على محتوى الشاشة. جاري إعداد رسالة التليجرام...")
-                val token = prefs.getString("BOT_TOKEN", "") ?: ""
-                val chatId = prefs.getString("CHAT_ID", "") ?: ""
+                // استخراج جميع النصوص من الشاشة
+                val allTexts = mutableListOf<String>()
+                extractTextFromNodes(rootNode, allTexts)
                 
-                if (token.isNotEmpty() && chatId.isNotEmpty()) {
-                    sendTelegramMessage(token, chatId, "🤖 البوت يعمل بنجاح! تم التقاط بريدفاست.")
+                val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
+                val foundDeals = analyzeTextsForDeals(allTexts, minDiscount)
+
+                if (foundDeals.isNotEmpty()) {
+                    addLog("🔥 تم العثور على ${foundDeals.size} عروض! جاري الإرسال...")
+                    val token = prefs.getString("BOT_TOKEN", "") ?: ""
+                    val chatId = prefs.getString("CHAT_ID", "") ?: ""
+                    
+                    val message = "🛒 **عروض جديدة مطابقة لشرطك:**\n\n" + foundDeals.joinToString("\n---\n")
+                    sendTelegramMessage(token, chatId, message)
                 } else {
-                    addLog("❌ خطأ: لم يتم إدخال التوكن أو Chat ID بشكل صحيح في الإعدادات.")
+                    addLog("📉 لم يتم العثور على عروض تتجاوز نسبة $minDiscount%.")
                 }
 
-                addLog("🏠 جاري محاكاة زر (Home) لإغلاق التطبيق...")
+                // العودة للشاشة الرئيسية
+                addLog("🏠 جاري إغلاق التطبيق والعودة...")
                 performGlobalAction(GLOBAL_ACTION_HOME)
-            } else {
-                addLog("⚠️ تحذير: لم يتمكن التطبيق من قراءة محتوى الشاشة (Root Node is null). قد تكون الشاشة قيد التحميل.")
             }
             
-            // تحرير حالة القراءة بعد 5 ثوانٍ
             thread {
-                Thread.sleep(5000)
+                Thread.sleep(8000)
                 isScanning = false
             }
         }
     }
 
+    // خوارزمية استخراج النصوص بالكامل
+    private fun extractTextFromNodes(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
+        if (node == null) return
+        if (node.text != null) {
+            texts.add(node.text.toString())
+        }
+        if (node.contentDescription != null) {
+            texts.add(node.contentDescription.toString())
+        }
+        for (i in 0 until node.childCount) {
+            extractTextFromNodes(node.getChild(i), texts)
+        }
+    }
+
+    // خوارزمية البحث وتحليل الخصومات
+    private fun analyzeTextsForDeals(texts: List<String>, minDiscount: Int): List<String> {
+        val deals = mutableListOf<String>()
+        val priceRegex = Regex("(\\d+(\\.\\d+)?)\\s*(EGP|جنيه)", RegexOption.IGNORE_CASE)
+        val discountRegex = Regex("(\\d+)%\\s*(OFF|خصم)", RegexOption.IGNORE_CASE)
+
+        for (text in texts) {
+            // البحث عن النصوص التي تحتوي على علامة الخصم %
+            val discountMatch = discountRegex.find(text)
+            if (discountMatch != null) {
+                val percent = discountMatch.groupValues[1].toIntOrNull() ?: 0
+                if (percent >= minDiscount) {
+                    deals.add("✅ خصم بقيمة $percent%\n التفاصيل: $text")
+                }
+            }
+        }
+        // يمكن تطوير هذه الخوارزمية لاحقاً لربط السعر بالاسم بدقة بناءً على ترتيب الـ Nodes
+        return deals.distinct()
+    }
+
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
         thread {
             try {
-                addLog("⏳ جاري الاتصال بسيرفر تليجرام...")
                 val encodedText = URLEncoder.encode(text, "UTF-8")
-                val url = URL("https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$encodedText")
+                val url = URL("https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=$encodedText&parse_mode=Markdown")
                 val connection = url.openConnection() as HttpURLConnection
                 connection.requestMethod = "GET"
-                val responseCode = connection.responseCode
-                
-                if (responseCode == 200) {
-                    addLog("🚀 تم الإرسال لتليجرام بنجاح (كود 200).")
-                } else {
-                    addLog("❌ فشل الإرسال لتليجرام. كود الخطأ: $responseCode (تأكد من صحة التوكن).")
-                }
+                connection.inputStream.reader().readText()
                 connection.disconnect()
             } catch (e: Exception) {
-                addLog("❌ خطأ برمجي أثناء الإرسال: ${e.message}")
+                addLog("❌ خطأ إرسال: ${e.message}")
             }
         }
     }
 
-    override fun onInterrupt() {
-        addLog("⚠️ تمت مقاطعة الخدمة (onInterrupt).")
-    }
+    override fun onInterrupt() {}
 }
