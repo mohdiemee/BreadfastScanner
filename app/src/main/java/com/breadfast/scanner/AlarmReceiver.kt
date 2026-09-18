@@ -13,6 +13,9 @@ class AlarmReceiver : BroadcastReceiver() {
         val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: "com.breadfast.application"
         addLog(context, "⏰ المنبه رن! محاولة فتح: $targetApp")
 
+        // إعطاء تأشيرة الدخول للبوت ليعمل هذه المرة فقط
+        prefs.edit().putBoolean("IS_AUTO_RUNNING", true).apply()
+
         val pm = context.packageManager
         val launchIntent = pm.getLaunchIntentForPackage(targetApp)
         
@@ -20,12 +23,14 @@ class AlarmReceiver : BroadcastReceiver() {
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             try {
                 context.startActivity(launchIntent)
-                addLog(context, "🚀 تم إرسال أمر الفتح بنجاح.")
+                addLog(context, "🚀 تم إرسال أمر الفتح بنجاح (وضع الأتمتة مفعل).")
             } catch (e: Exception) {
                 addLog(context, "❌ منع النظام الفتح: ${e.message}")
+                prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
             }
         } else {
-            addLog(context, "❌ لم يتم العثور على التطبيق. تأكد من صحة اسم الحزمة.")
+            addLog(context, "❌ لم يتم العثور على التطبيق.")
+            prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
         }
     }
 
