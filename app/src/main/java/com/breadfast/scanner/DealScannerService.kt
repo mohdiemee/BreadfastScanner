@@ -83,29 +83,41 @@ class DealScannerService : AccessibilityService() {
             
             val clearAllNode = findNodeByText(rootInActiveWindow, "مسح الكل") ?: findNodeByText(rootInActiveWindow, "Clear All")
             if (clearAllNode != null) {
-                clickNodeSafely(clearAllNode)
-                Thread.sleep(2000) // انتظار ظهور النافذة المنبثقة للتأكيد
+                addLog("🗑️ تم العثور على زر مسح الكل الرئيسي.")
+                val clickedMainClear = clickNodeSafely(clearAllNode)
                 
-                // === التعديل لحل مشكلة الزر السفلي ===
-                // تجميع كل الأزرار التي تحمل نفس النص لاختيار الزر الموجود بأسفل الشاشة
-                val allClearNodes = mutableListOf<AccessibilityNodeInfo>()
-                rootInActiveWindow?.findAccessibilityNodeInfosByText("مسح الكل")?.let { allClearNodes.addAll(it) }
-                rootInActiveWindow?.findAccessibilityNodeInfosByText("Clear All")?.let { allClearNodes.addAll(it) }
-                
-                // ترتيب الأزرار وتحديد الزر صاحب أكبر إحداثي رأسي (الموجود في القاع)
-                val bottomConfirmNode = allClearNodes.maxByOrNull { node ->
-                    val rect = Rect()
-                    node.getBoundsInScreen(rect)
-                    rect.bottom
-                }
-                
-                if (bottomConfirmNode != null) {
-                    clickNodeSafely(bottomConfirmNode)
-                    Thread.sleep(2000)
-                    addLog("✅ تم تأكيد مسح السلة بنجاح (النقر على الزر السفلي).")
+                if (!clickedMainClear) {
+                    addLog("❌ تعذر النقر على زر مسح الكل الرئيسي.")
                 } else {
-                    addLog("⚠️ لم يظهر زر تأكيد المسح السفلي.")
+                    addLog("⏳ ننتظر زر التأكيد داخل Bottom Sheet...")
+                    val confirmButton = waitForBottomSheetClearButton(6000)
+                    
+                    if (confirmButton == null) {
+                        addLog("❌ لم يتم العثور على زر تأكيد مسح السلة السفلي.")
+                    } else {
+                        val confirmClicked = clickConfirmClearButton(confirmButton)
+                        if (!confirmClicked) {
+                            addLog("❌ لم تنجح محاولة النقر على تأكيد مسح السلة.")
+                        } else {
+                            addLog("⏳ تم إرسال أمر التأكيد، نتحقق من تغيّر السلة...")
+                            var cartCleared = false
+                            repeat(12) {
+                                Thread.sleep(400)
+                                if (isCartEmpty()) {
+                                    cartCleared = true
+                                    return@repeat
+                                }
+                            }
+                            if (cartCleared) {
+                                addLog("✅ تم التحقق من تفريغ السلة بنجاح.")
+                            } else {
+                                addLog("⚠️ لم يتم التحقق من تفريغ السلة؛ الزر الرئيسي لا يزال موجوداً.")
+                            }
+                        }
+                    }
                 }
+            } else {
+                addLog("ℹ️ لم يظهر زر مسح الكل الرئيسي؛ السلة قد تكون فارغة بالفعل.")
             }
             
             // محاكاة زر الرجوع للخلف للعودة للصفحة الرئيسية
@@ -347,35 +359,12 @@ class DealScannerService : AccessibilityService() {
                     return true
                 }
             }
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
+            val rect = getRect(node)
             if (rect.isEmpty || rect.width() < 10 || rect.height() < 10) {
                 return false
             }
             
-            val latch = CountDownLatch(1)
-            var completed = false
-            val path = Path().apply { moveTo(rect.centerX().toFloat(), rect.centerY().toFloat()) }
-            val gesture = GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0, 80))
-                .build()
-                
-            val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    completed = true
-                    latch.countDown()
-                }
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    completed = false
-                    latch.countDown()
-                }
-            }, null)
-            
-            if (!dispatched) return false
-            
-            latch.await(1500, TimeUnit.MILLISECONDS)
-            Thread.sleep(500)
-            return completed
+            return tapScreenPoint(rect.centerX().toFloat(), rect.centerY().toFloat())
         } catch (e: Exception) {
             return false
         }
@@ -561,4 +550,138 @@ class DealScannerService : AccessibilityService() {
     }
 
     override fun onInterrupt() {}
+
+    // ==========================================
+    // دوال مساعدة لعملية مسح السلة (تحديثات الخبير)
+    // ==========================================
+
+    private fun normalizedText(node: AccessibilityNodeInfo): String {
+        return (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+    }
+
+    private fun getRect(node: AccessibilityNodeInfo): Rect {
+        return Rect().also { node.getBoundsInScreen(it) }
+    }
+
+    private fun findClickableParent(startNode: AccessibilityNodeInfo, maxLevels: Int = 5): AccessibilityNodeInfo? {
+        var node: AccessibilityNodeInfo? = startNode
+        repeat(maxLevels) {
+            val current = node ?: return null
+            if (current.isVisibleToUser && current.isEnabled && current.isClickable) {
+                return current
+            }
+            node = current.parent
+        }
+        return null
+    }
+
+    private fun collectNodesByExactText(node: AccessibilityNodeInfo?, target: String, result: MutableList<AccessibilityNodeInfo>) {
+        if (node == null) return
+        val value = normalizedText(node)
+        if (value.equals(target, ignoreCase = true)) {
+            result.add(node)
+        }
+        for (i in 0 until node.childCount) {
+            collectNodesByExactText(node.getChild(i), target, result)
+        }
+    }
+
+    private fun findBottomSheetClearConfirmButton(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        val screenHeight = resources.displayMetrics.heightPixels
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        
+        collectNodesByExactText(root, "مسح الكل", candidates)
+        collectNodesByExactText(root, "Clear All", candidates)
+        
+        val buttonCandidates = candidates.mapNotNull { textNode ->
+            findClickableParent(textNode) ?: textNode.takeIf { it.isClickable && it.isEnabled && it.isVisibleToUser }
+        }.filter { buttonNode ->
+            val rect = getRect(buttonNode)
+            // التأكد من أن الزر يقع في النصف السفلي لتجاهل زر الخلفية الموجود بالأعلى
+            rect.centerY() > screenHeight * 0.58 &&
+            rect.width() > resources.displayMetrics.widthPixels * 0.45 &&
+            buttonNode.isVisibleToUser &&
+            buttonNode.isEnabled
+        }
+        
+        return buttonCandidates.maxByOrNull { getRect(it).centerY() }
+    }
+
+    private fun waitForBottomSheetClearButton(timeoutMs: Long = 6000L): AccessibilityNodeInfo? {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            val button = findBottomSheetClearConfirmButton()
+            if (button != null) {
+                val rect = getRect(button)
+                addLog("🔎 تم إيجاد زر تأكيد: bounds=$rect, clickable=${button.isClickable}")
+                return button
+            }
+            Thread.sleep(250)
+        }
+        return null
+    }
+
+    private fun clickConfirmClearButton(button: AccessibilityNodeInfo): Boolean {
+        try {
+            if (!button.refresh()) {
+                addLog("⚠️ عقدة زر التأكيد أصبحت قديمة.")
+                return false
+            }
+            if (button.isClickable) {
+                val actionAccepted = button.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (actionAccepted) {
+                    return true
+                }
+            }
+            val rect = getRect(button)
+            if (rect.isEmpty || rect.width() < 50 || rect.height() < 40) {
+                return false
+            }
+            return tapScreenPoint(rect.centerX().toFloat(), rect.centerY().toFloat())
+        } catch (e: Exception) {
+            addLog("❌ فشل النقر على زر تأكيد المسح: ${e.message}")
+            return false
+        }
+    }
+
+    private fun tapScreenPoint(x: Float, y: Float): Boolean {
+        val latch = CountDownLatch(1)
+        var completed = false
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
+            .build()
+            
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                completed = true
+                latch.countDown()
+            }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                completed = false
+                latch.countDown()
+            }
+        }, null)
+        
+        if (!dispatched) return false
+        
+        latch.await(2, TimeUnit.SECONDS)
+        Thread.sleep(500)
+        return completed
+    }
+
+    private fun isCartEmpty(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val emptyText = findNodeByText(root, "السلة فارغة")
+                ?: findNodeByText(root, "سلتك فارغة")
+                ?: findNodeByText(root, "Your cart is empty")
+                ?: findNodeByText(root, "فارغة")
+        
+        if (emptyText != null) return true
+        
+        // فحص بديل: إذا اختفى زر مسح الكل الرئيسي تماماً من الشاشة فهذا مؤشر على تفريغ السلة
+        val clearBtn = findNodeByText(root, "مسح الكل") ?: findNodeByText(root, "Clear All")
+        return clearBtn == null
+    }
 }
