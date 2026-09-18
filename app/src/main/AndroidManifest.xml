@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <!-- الصلاحية الجديدة لرؤية التطبيقات المثبتة وفتحها -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    
+    <!-- الصلاحيات المضافة لضمان العمل في الخلفية وتخطي قفل الشاشة -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
         android:allowBackup="true"
