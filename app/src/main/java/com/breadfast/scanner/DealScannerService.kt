@@ -84,8 +84,21 @@ class DealScannerService : AccessibilityService() {
             val clearAllNode = findNodeByText(rootInActiveWindow, "مسح الكل") ?: findNodeByText(rootInActiveWindow, "Clear All")
             if (clearAllNode != null) {
                 clickNodeSafely(clearAllNode)
-                Thread.sleep(2000)
-                addLog("✅ تم مسح السلة بنجاح.")
+                Thread.sleep(2000) // انتظار ظهور النافذة المنبثقة للتأكيد
+                
+                // البحث عن زر التأكيد (مسح الكل) في النافذة المنبثقة
+                val confirmClearNodes = rootInActiveWindow?.findAccessibilityNodeInfosByText("مسح الكل")
+                val confirmClearNodesEn = rootInActiveWindow?.findAccessibilityNodeInfosByText("Clear All")
+                
+                val finalConfirmNode = confirmClearNodes?.lastOrNull() ?: confirmClearNodesEn?.lastOrNull()
+                
+                if (finalConfirmNode != null) {
+                    clickNodeSafely(finalConfirmNode)
+                    Thread.sleep(2000)
+                    addLog("✅ تم تأكيد مسح السلة بنجاح.")
+                } else {
+                    addLog("⚠️ لم يظهر زر تأكيد المسح.")
+                }
             }
             
             // محاكاة زر الرجوع للخلف للعودة للصفحة الرئيسية
