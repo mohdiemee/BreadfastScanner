@@ -1,8 +1,10 @@
 package com.breadfast.scanner
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Path
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.net.HttpURLConnection
@@ -31,16 +33,13 @@ class DealScannerService : AccessibilityService() {
 
         val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: ""
         
-        // عندما يفتح التطبيق المستهدف
         if (event.packageName?.toString() == targetApp) {
             val currentTime = System.currentTimeMillis()
-            // منع تكرار الحدث المتسارع
             if (isScanning || currentTime - lastScanTime < 30000) return 
             
             isScanning = true
             lastScanTime = currentTime
             
-            // تشغيل المهمة في مسار خلفي (Thread) لعدم تجميد الهاتف أثناء الانتظار
             thread {
                 try {
                     runAutomation(prefs)
@@ -55,29 +54,29 @@ class DealScannerService : AccessibilityService() {
 
     private fun runAutomation(prefs: SharedPreferences) {
         addLog("⏳ تم فتح التطبيق.. ننتظر 20 ثانية لاكتمال التحميل...")
-        Thread.sleep(20000) // انتظار 20 ثانية
+        Thread.sleep(20000) 
 
         val rootNode = rootInActiveWindow
         if (rootNode == null) {
-            addLog("❌ لم نتمكن من قراءة الشاشة (يبدو أن التطبيق لم يحمل).")
+            addLog("❌ لم نتمكن من قراءة الشاشة.")
             performGlobalAction(GLOBAL_ACTION_HOME)
             return
         }
 
-        // 1. البحث عن أيقونة Deals والتمرير للوصول إليها
+        // 1. البحث عن أيقونة Deals والتمرير للوصول إليها باستخدام Swipe
         var dealsNode = findNodeByText(rootInActiveWindow, "Deals")
         var scrollAttempts = 0
         
         while (dealsNode == null && scrollAttempts < 4) {
-            addLog("🔄 جاري التمرير لأسفل للبحث عن أيقونة العروض...")
-            scrollScreen(rootInActiveWindow)
-            Thread.sleep(3000) // انتظار 3 ثواني بعد كل تمرير لظهور العناصر
+            addLog("🔄 جاري السحب لأسفل للبحث عن أيقونة العروض...")
+            swipeUp()
+            Thread.sleep(3000)
             dealsNode = findNodeByText(rootInActiveWindow, "Deals")
             scrollAttempts++
         }
 
         if (dealsNode == null) {
-            addLog("⚠️ لم يتم العثور على أيقونة (Deals) بعد التمرير، جاري الإغلاق.")
+            addLog("⚠️ لم يتم العثور على أيقونة (Deals)، جاري الإغلاق.")
             performGlobalAction(GLOBAL_ACTION_HOME)
             return
         }
@@ -88,13 +87,13 @@ class DealScannerService : AccessibilityService() {
         addLog("⏳ ننتظر 8 ثواني لتحميل صفحة العروض...")
         Thread.sleep(8000)
 
-        // 2. قراءة صفحة العروض (مسح وتمرير متكرر لجمع أكبر قدر من المنتجات)
+        // 2. قراءة صفحة العروض (مسح وسحب متكرر للمنتجات الفعلية)
         addLog("🔍 جاري مسح المنتجات وقراءة الأسعار...")
         val allTexts = mutableListOf<String>()
         
-        for (i in 1..4) { // سيقوم بالتمرير 4 مرات داخل صفحة العروض
+        for (i in 1..4) {
             extractTextFromNodes(rootInActiveWindow, allTexts)
-            scrollScreen(rootInActiveWindow)
+            swipeUp() // السحب البشري لأسفل الشاشة
             Thread.sleep(3000)
         }
 
@@ -118,9 +117,25 @@ class DealScannerService : AccessibilityService() {
         performGlobalAction(GLOBAL_ACTION_HOME)
     }
 
-    // --- الدوال المساعدة (Helpers) ---
+    // --- محاكاة السحب البشري (Swipe Up) ---
+    private fun swipeUp() {
+        val displayMetrics = resources.displayMetrics
+        val middleX = displayMetrics.widthPixels / 2f
+        val startY = displayMetrics.heightPixels * 0.8f // يبدأ السحب من أسفل الشاشة
+        val endY = displayMetrics.heightPixels * 0.2f   // ينتهي في أعلى الشاشة
 
-    // دالة لاستخراج كل النصوص من الشاشة بالترتيب
+        val path = Path().apply {
+            moveTo(middleX, startY)
+            lineTo(middleX, endY)
+        }
+
+        val gestureBuilder = GestureDescription.Builder()
+        val stroke = GestureDescription.StrokeDescription(path, 0, 500) // مدة السحب نصف ثانية
+        gestureBuilder.addStroke(stroke)
+
+        dispatchGesture(gestureBuilder.build(), null, null)
+    }
+
     private fun extractTextFromNodes(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
         if (node == null) return
         val text = node.text?.toString() ?: node.contentDescription?.toString()
@@ -132,10 +147,8 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    // دالة لحساب الخصم من الأرقام المتجاورة (السعر القديم والجديد)
     private fun analyzePricesAndCalculateDiscount(texts: List<String>, minDiscount: Int): List<String> {
         val deals = mutableListOf<String>()
-        // تنظيف القائمة من التكرار مع الحفاظ على الترتيب
         val uniqueTexts = texts.distinct() 
         val numRegex = Regex("^\\d+(\\.\\d+)?$")
 
@@ -143,7 +156,6 @@ class DealScannerService : AccessibilityService() {
             val text1 = uniqueTexts[i].replace(Regex("[^0-9.]"), "")
             val text2 = uniqueTexts[i+1].replace(Regex("[^0-9.]"), "")
             
-            // إذا وجدنا رقمين متتاليين (سعر قديم وجديد)
             if (text1.matches(numRegex) && text2.matches(numRegex) && text1.isNotEmpty() && text2.isNotEmpty()) {
                 val p1 = text1.toDoubleOrNull()
                 val p2 = text2.toDoubleOrNull()
@@ -154,7 +166,6 @@ class DealScannerService : AccessibilityService() {
                     val discountPercent = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
                     
                     if (discountPercent >= minDiscount) {
-                        // التقاط اسم المنتج (غالباً يكون بعد السعر مباشرة)
                         val productName = if (i + 2 < uniqueTexts.size && !uniqueTexts[i+2].replace(Regex("[^0-9.]"), "").matches(numRegex)) {
                             uniqueTexts[i+2]
                         } else {
@@ -170,7 +181,6 @@ class DealScannerService : AccessibilityService() {
         return deals
     }
 
-    // دالة للبحث عن نص معين للضغط عليه
     private fun findNodeByText(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
         if (node == null) return null
         val nodeText = node.text?.toString() ?: node.contentDescription?.toString()
@@ -184,7 +194,6 @@ class DealScannerService : AccessibilityService() {
         return null
     }
 
-    // دالة لمحاكاة الضغط (تبحث عن العنصر القابل للضغط)
     private fun clickNode(node: AccessibilityNodeInfo?): Boolean {
         var current = node
         while (current != null) {
@@ -193,19 +202,6 @@ class DealScannerService : AccessibilityService() {
                 return true
             }
             current = current.parent
-        }
-        return false
-    }
-
-    // دالة لعمل تمرير (Scroll) لأسفل الشاشة
-    private fun scrollScreen(node: AccessibilityNodeInfo?): Boolean {
-        if (node == null) return false
-        if (node.isScrollable) {
-            node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-            return true
-        }
-        for (i in 0 until node.childCount) {
-            if (scrollScreen(node.getChild(i))) return true
         }
         return false
     }
