@@ -91,7 +91,6 @@ class MainActivity : Activity() {
                     apply()
                 }
                 
-                // تفعيل المواعيد في نظام الأندرويد
                 scheduleAlarms(timesInput.text.toString())
                 Toast.makeText(this@MainActivity, "تم الحفظ والجدولة بنجاح!", Toast.LENGTH_LONG).show()
                 
@@ -125,7 +124,7 @@ class MainActivity : Activity() {
                     text = "إيقاف البوت"
                     setBackgroundColor(Color.parseColor("#F44336"))
                     statusText.text = "حالة البوت: يعمل 🟢"
-                    scheduleAlarms(timesInput.text.toString()) // إعادة جدولة عند التشغيل
+                    scheduleAlarms(timesInput.text.toString())
                 } else {
                     text = "تشغيل البوت"
                     setBackgroundColor(Color.parseColor("#4CAF50"))
@@ -143,6 +142,49 @@ class MainActivity : Activity() {
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
         layout.addView(accessBtn)
+
+        // --- قسم السجلات (Logs) الجديد ---
+        layout.addView(android.view.View(this).apply { layoutParams = LinearLayout.LayoutParams(1, 40) })
+        layout.addView(createLabel("سجل الأحداث (Logs):"))
+        
+        val logText = TextView(this).apply {
+            text = prefs.getString("APP_LOGS", "لا توجد سجلات حتى الآن.")
+            textSize = 12f
+            setBackgroundColor(Color.parseColor("#E0E0E0"))
+            setPadding(20, 20, 20, 20)
+            setTextColor(Color.BLACK)
+        }
+        layout.addView(logText)
+
+        val logButtonsLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, 20, 0, 40)
+        }
+        
+        val refreshLogBtn = Button(this).apply {
+            text = "تحديث السجل"
+            setBackgroundColor(Color.GRAY)
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                logText.text = prefs.getString("APP_LOGS", "لا توجد سجلات حتى الآن.")
+            }
+        }
+        
+        val clearLogBtn = Button(this).apply {
+            text = "مسح السجل"
+            setBackgroundColor(Color.DKGRAY)
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            setOnClickListener {
+                prefs.edit().putString("APP_LOGS", "").apply()
+                logText.text = "تم مسح السجلات."
+            }
+        }
+        
+        logButtonsLayout.addView(refreshLogBtn)
+        logButtonsLayout.addView(clearLogBtn)
+        layout.addView(logButtonsLayout)
 
         scrollView.addView(layout)
         setContentView(scrollView)
@@ -175,12 +217,10 @@ class MainActivity : Activity() {
                 }
                 
                 if (calendar.timeInMillis <= System.currentTimeMillis()) {
-                    calendar.add(Calendar.DAY_OF_YEAR, 1) // إذا مر الوقت اليوم، اجدوله للغد
+                    calendar.add(Calendar.DAY_OF_YEAR, 1)
                 }
                 
                 val pendingIntent = PendingIntent.getBroadcast(this, index, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                
-                // طلب فتح دقيق وموقظ للنظام
                 alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.timeInMillis, pendingIntent)
             }
         }
