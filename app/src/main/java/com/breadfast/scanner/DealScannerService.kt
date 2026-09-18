@@ -140,7 +140,7 @@ class DealScannerService : AccessibilityService() {
         var scrollAttempts = 0
         
         while (dealsNode == null && scrollAttempts < 4) {
-            swipeUp(0.8f, 0.5f, 500L)
+            swipeUp(0.8f, 0.5f, 400L)
             Thread.sleep(1500)
             dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
             scrollAttempts++
@@ -182,14 +182,22 @@ class DealScannerService : AccessibilityService() {
         var emptyScrolls = 0
         var totalScrolls = 0
         
+        // حساب أبعاد المنطقة الآمنة للشاشة
+        val displayMetrics = resources.displayMetrics
+        val safeTop = displayMetrics.heightPixels * 0.15f
+        val safeBottom = displayMetrics.heightPixels * 0.85f
+        
         while (totalScrolls < 1000) {
             val visibleNodes = mutableListOf<NodeData>()
-            extractNodes(rootInActiveWindow, visibleNodes)
+            // تمرير إحداثيات المنطقة الآمنة للدالة
+            extractNodes(rootInActiveWindow, visibleNodes, safeTop, safeBottom)
             
             val currentScreenContent = visibleNodes.map { it.text }.distinct().sorted().joinToString("|")
             
             analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
-            Thread.sleep(1200)
+            
+            // التأخير الأول (حسب التعديل الجديد)
+            Thread.sleep(900)
 
             if (currentScreenContent == previousScreenContent) {
                 emptyScrolls++
@@ -204,8 +212,11 @@ class DealScannerService : AccessibilityService() {
             previousScreenContent = currentScreenContent
             totalScrolls++
             
-            swipeUp(0.8f, 0.5f, 500L)
-            Thread.sleep(1500) 
+            // السحب بالتوقيتات الجديدة
+            swipeUp(0.8f, 0.5f, 400L)
+            
+            // التأخير الثاني (حسب التعديل الجديد)
+            Thread.sleep(1100) 
         }
 
         val token = prefs.getString("BOT_TOKEN", "") ?: ""
@@ -217,24 +228,34 @@ class DealScannerService : AccessibilityService() {
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals)
             } else {
-                sendChunksAsText(token, chatId, foundDeals.chunked(5)) // تقسيم 5 منتجات
+                sendChunksAsText(token, chatId, foundDeals.chunked(5))
             }
         } else {
             addLog("📉 لم يتم العثور على عروض مناسبة أو جميع العروض تم إرسالها خلال فترة $cooldownHours ساعات الماضية.")
         }
     }
 
-    private fun extractNodes(node: AccessibilityNodeInfo?, nodesList: MutableList<NodeData>) {
+    // === الدالة المحدثة مع فلتر "المنطقة الآمنة" ===
+    private fun extractNodes(node: AccessibilityNodeInfo?, nodesList: MutableList<NodeData>, safeTop: Float, safeBottom: Float) {
         if (node == null) return
-        val text = node.text?.toString()?.trim() ?: node.contentDescription?.toString()?.trim() ?: ""
         
-        if (text.isNotEmpty()) {
-            if (nodesList.none { it.text == text && it.node == node }) {
-                nodesList.add(NodeData(text, node))
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        
+        // التأكد من أن العنصر بأكمله يقع داخل المنطقة الآمنة (يستبعد العناصر المقطوعة)
+        val isSafe = rect.top >= safeTop && rect.bottom <= safeBottom
+        
+        if (isSafe) {
+            val text = node.text?.toString()?.trim() ?: node.contentDescription?.toString()?.trim() ?: ""
+            if (text.isNotEmpty()) {
+                if (nodesList.none { it.text == text && it.node == node }) {
+                    nodesList.add(NodeData(text, node))
+                }
             }
         }
+        
         for (i in 0 until node.childCount) {
-            extractNodes(node.getChild(i), nodesList)
+            extractNodes(node.getChild(i), nodesList, safeTop, safeBottom)
         }
     }
 
@@ -419,7 +440,6 @@ class DealScannerService : AccessibilityService() {
         addLog("🛒 جاري فتح السلة لتصوير التقرير...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
-        // تقسيم المنتجات إلى مجموعات من 5 لتتوافق مع سعة صورة السلة
         val chunks = deals.chunked(5)
         val shotsCount = chunks.size
         
@@ -432,7 +452,6 @@ class DealScannerService : AccessibilityService() {
             for (i in 0 until shotsCount) {
                 val bitmap = takeScreenshotSync()
                 if (bitmap != null) {
-                    // قص دقيق بنسبة 21% من الأعلى و 19% من الأسفل لإخفاء البانرات وإبقاء المنتجات الـ 5 فقط
                     val topCrop = (bitmap.height * 0.21).toInt()
                     val bottomCrop = (bitmap.height * 0.19).toInt()
                     val croppedHeight = bitmap.height - topCrop - bottomCrop
@@ -446,8 +465,6 @@ class DealScannerService : AccessibilityService() {
                 }
                 
                 if (i < shotsCount - 1) {
-                    // سحب بطيء جداً (Drag) ومحسوب من 78% إلى 22% لمدة 1.2 ثانية.
-                    // هذا السحب ينقل القائمة بالضبط صفحة واحدة للأسفل بدون أي تدحرج (Fling)
                     swipeUp(0.78f, 0.22f, 1200L)
                     Thread.sleep(2000)
                 }
@@ -577,7 +594,6 @@ class DealScannerService : AccessibilityService() {
         } catch (e: Exception) {}
     }
 
-    // === تعديل دالة swipeUp لتقبل مُعامل الزمن للتحكم في السرعة ومنع التدحرج ===
     private fun swipeUp(startFactor: Float, endFactor: Float, durationMs: Long) {
         val displayMetrics = resources.displayMetrics
         val path = Path().apply {
