@@ -2,6 +2,7 @@ package com.breadfast.scanner
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.SharedPreferences
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import java.net.HttpURLConnection
@@ -29,80 +30,184 @@ class DealScannerService : AccessibilityService() {
         if (!prefs.getBoolean("IS_ACTIVE", false)) return
 
         val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: ""
+        
+        // عندما يفتح التطبيق المستهدف
         if (event.packageName?.toString() == targetApp) {
-            
             val currentTime = System.currentTimeMillis()
-            if (currentTime - lastScanTime < 8000 || isScanning) return 
+            // منع تكرار الحدث المتسارع
+            if (isScanning || currentTime - lastScanTime < 30000) return 
             
             isScanning = true
             lastScanTime = currentTime
             
-            addLog("📱 تم التعرّف على التطبيق! جاري قراءة العروض...")
-
-            val rootNode = rootInActiveWindow
-            if (rootNode != null) {
-                // استخراج جميع النصوص من الشاشة
-                val allTexts = mutableListOf<String>()
-                extractTextFromNodes(rootNode, allTexts)
-                
-                val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
-                val foundDeals = analyzeTextsForDeals(allTexts, minDiscount)
-
-                if (foundDeals.isNotEmpty()) {
-                    addLog("🔥 تم العثور على ${foundDeals.size} عروض! جاري الإرسال...")
-                    val token = prefs.getString("BOT_TOKEN", "") ?: ""
-                    val chatId = prefs.getString("CHAT_ID", "") ?: ""
-                    
-                    val message = "🛒 **عروض جديدة مطابقة لشرطك:**\n\n" + foundDeals.joinToString("\n---\n")
-                    sendTelegramMessage(token, chatId, message)
-                } else {
-                    addLog("📉 لم يتم العثور على عروض تتجاوز نسبة $minDiscount%.")
-                }
-
-                // العودة للشاشة الرئيسية
-                addLog("🏠 جاري إغلاق التطبيق والعودة...")
-                performGlobalAction(GLOBAL_ACTION_HOME)
-            }
-            
+            // تشغيل المهمة في مسار خلفي (Thread) لعدم تجميد الهاتف أثناء الانتظار
             thread {
-                Thread.sleep(8000)
-                isScanning = false
+                try {
+                    runAutomation(prefs)
+                } catch (e: Exception) {
+                    addLog("❌ خطأ أثناء الفحص: ${e.message}")
+                } finally {
+                    isScanning = false
+                }
             }
         }
     }
 
-    // خوارزمية استخراج النصوص بالكامل
+    private fun runAutomation(prefs: SharedPreferences) {
+        addLog("⏳ تم فتح التطبيق.. ننتظر 20 ثانية لاكتمال التحميل...")
+        Thread.sleep(20000) // انتظار 20 ثانية
+
+        val rootNode = rootInActiveWindow
+        if (rootNode == null) {
+            addLog("❌ لم نتمكن من قراءة الشاشة (يبدو أن التطبيق لم يحمل).")
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            return
+        }
+
+        // 1. البحث عن أيقونة Deals والتمرير للوصول إليها
+        var dealsNode = findNodeByText(rootInActiveWindow, "Deals")
+        var scrollAttempts = 0
+        
+        while (dealsNode == null && scrollAttempts < 4) {
+            addLog("🔄 جاري التمرير لأسفل للبحث عن أيقونة العروض...")
+            scrollScreen(rootInActiveWindow)
+            Thread.sleep(3000) // انتظار 3 ثواني بعد كل تمرير لظهور العناصر
+            dealsNode = findNodeByText(rootInActiveWindow, "Deals")
+            scrollAttempts++
+        }
+
+        if (dealsNode == null) {
+            addLog("⚠️ لم يتم العثور على أيقونة (Deals) بعد التمرير، جاري الإغلاق.")
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            return
+        }
+
+        addLog("🎯 تم العثور على أيقونة العروض! جاري الضغط...")
+        clickNode(dealsNode)
+        
+        addLog("⏳ ننتظر 8 ثواني لتحميل صفحة العروض...")
+        Thread.sleep(8000)
+
+        // 2. قراءة صفحة العروض (مسح وتمرير متكرر لجمع أكبر قدر من المنتجات)
+        addLog("🔍 جاري مسح المنتجات وقراءة الأسعار...")
+        val allTexts = mutableListOf<String>()
+        
+        for (i in 1..4) { // سيقوم بالتمرير 4 مرات داخل صفحة العروض
+            extractTextFromNodes(rootInActiveWindow, allTexts)
+            scrollScreen(rootInActiveWindow)
+            Thread.sleep(3000)
+        }
+
+        // 3. تحليل النصوص وحساب النسب
+        val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
+        val foundDeals = analyzePricesAndCalculateDiscount(allTexts, minDiscount)
+
+        // 4. الإرسال والإغلاق
+        if (foundDeals.isNotEmpty()) {
+            addLog("🔥 تم العثور على ${foundDeals.size} منتجات بخصم يتخطى $minDiscount%.")
+            val token = prefs.getString("BOT_TOKEN", "") ?: ""
+            val chatId = prefs.getString("CHAT_ID", "") ?: ""
+            
+            val message = "🛒 **عروض بريدفاست الجديدة:**\n\n" + foundDeals.joinToString("\n---\n")
+            sendTelegramMessage(token, chatId, message)
+        } else {
+            addLog("📉 لم يتم العثور على أي خصومات تتخطى $minDiscount%.")
+        }
+
+        addLog("🏠 انتهت المهمة بنجاح، جاري إغلاق التطبيق.")
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    // --- الدوال المساعدة (Helpers) ---
+
+    // دالة لاستخراج كل النصوص من الشاشة بالترتيب
     private fun extractTextFromNodes(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
         if (node == null) return
-        if (node.text != null) {
-            texts.add(node.text.toString())
-        }
-        if (node.contentDescription != null) {
-            texts.add(node.contentDescription.toString())
+        val text = node.text?.toString() ?: node.contentDescription?.toString()
+        if (!text.isNullOrBlank()) {
+            texts.add(text.trim())
         }
         for (i in 0 until node.childCount) {
             extractTextFromNodes(node.getChild(i), texts)
         }
     }
 
-    // خوارزمية البحث وتحليل الخصومات
-    private fun analyzeTextsForDeals(texts: List<String>, minDiscount: Int): List<String> {
+    // دالة لحساب الخصم من الأرقام المتجاورة (السعر القديم والجديد)
+    private fun analyzePricesAndCalculateDiscount(texts: List<String>, minDiscount: Int): List<String> {
         val deals = mutableListOf<String>()
-        val priceRegex = Regex("(\\d+(\\.\\d+)?)\\s*(EGP|جنيه)", RegexOption.IGNORE_CASE)
-        val discountRegex = Regex("(\\d+)%\\s*(OFF|خصم)", RegexOption.IGNORE_CASE)
+        // تنظيف القائمة من التكرار مع الحفاظ على الترتيب
+        val uniqueTexts = texts.distinct() 
+        val numRegex = Regex("^\\d+(\\.\\d+)?$")
 
-        for (text in texts) {
-            // البحث عن النصوص التي تحتوي على علامة الخصم %
-            val discountMatch = discountRegex.find(text)
-            if (discountMatch != null) {
-                val percent = discountMatch.groupValues[1].toIntOrNull() ?: 0
-                if (percent >= minDiscount) {
-                    deals.add("✅ خصم بقيمة $percent%\n التفاصيل: $text")
+        for (i in 0 until uniqueTexts.size - 1) {
+            val text1 = uniqueTexts[i].replace(Regex("[^0-9.]"), "")
+            val text2 = uniqueTexts[i+1].replace(Regex("[^0-9.]"), "")
+            
+            // إذا وجدنا رقمين متتاليين (سعر قديم وجديد)
+            if (text1.matches(numRegex) && text2.matches(numRegex) && text1.isNotEmpty() && text2.isNotEmpty()) {
+                val p1 = text1.toDoubleOrNull()
+                val p2 = text2.toDoubleOrNull()
+                
+                if (p1 != null && p2 != null && p1 != p2) {
+                    val oldPrice = maxOf(p1, p2)
+                    val newPrice = minOf(p1, p2)
+                    val discountPercent = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
+                    
+                    if (discountPercent >= minDiscount) {
+                        // التقاط اسم المنتج (غالباً يكون بعد السعر مباشرة)
+                        val productName = if (i + 2 < uniqueTexts.size && !uniqueTexts[i+2].replace(Regex("[^0-9.]"), "").matches(numRegex)) {
+                            uniqueTexts[i+2]
+                        } else {
+                            "منتج مميز"
+                        }
+                        
+                        val dealText = "✅ **$productName**\n📉 الخصم: $discountPercent%\n💰 السعر: $newPrice بدلاً من $oldPrice"
+                        if (!deals.contains(dealText)) deals.add(dealText)
+                    }
                 }
             }
         }
-        // يمكن تطوير هذه الخوارزمية لاحقاً لربط السعر بالاسم بدقة بناءً على ترتيب الـ Nodes
-        return deals.distinct()
+        return deals
+    }
+
+    // دالة للبحث عن نص معين للضغط عليه
+    private fun findNodeByText(node: AccessibilityNodeInfo?, targetText: String): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val nodeText = node.text?.toString() ?: node.contentDescription?.toString()
+        if (nodeText != null && nodeText.contains(targetText, ignoreCase = true)) {
+            return node
+        }
+        for (i in 0 until node.childCount) {
+            val result = findNodeByText(node.getChild(i), targetText)
+            if (result != null) return result
+        }
+        return null
+    }
+
+    // دالة لمحاكاة الضغط (تبحث عن العنصر القابل للضغط)
+    private fun clickNode(node: AccessibilityNodeInfo?): Boolean {
+        var current = node
+        while (current != null) {
+            if (current.isClickable) {
+                current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return true
+            }
+            current = current.parent
+        }
+        return false
+    }
+
+    // دالة لعمل تمرير (Scroll) لأسفل الشاشة
+    private fun scrollScreen(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        if (node.isScrollable) {
+            node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            return true
+        }
+        for (i in 0 until node.childCount) {
+            if (scrollScreen(node.getChild(i))) return true
+        }
+        return false
     }
 
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
@@ -115,7 +220,7 @@ class DealScannerService : AccessibilityService() {
                 connection.inputStream.reader().readText()
                 connection.disconnect()
             } catch (e: Exception) {
-                addLog("❌ خطأ إرسال: ${e.message}")
+                addLog("❌ خطأ إرسال للتليجرام: ${e.message}")
             }
         }
     }
