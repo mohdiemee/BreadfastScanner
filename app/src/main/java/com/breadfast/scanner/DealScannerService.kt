@@ -2,6 +2,7 @@ package com.breadfast.scanner
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.annotation.TargetApi
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.Bitmap
@@ -10,7 +11,6 @@ import android.os.Build
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import androidx.annotation.RequiresApi
 import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import java.net.HttpURLConnection
@@ -19,7 +19,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-// كلاس لحفظ النص مع العقدة البرمجية الخاصة به لنتمكن من الضغط عليها لاحقاً
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
 
 class DealScannerService : AccessibilityService() {
@@ -117,7 +116,7 @@ class DealScannerService : AccessibilityService() {
             totalScrolls++
             
             swipeUp()
-            Thread.sleep(1500) // تسريع التمرير كما طلبت
+            Thread.sleep(1500) 
         }
 
         val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
@@ -130,11 +129,10 @@ class DealScannerService : AccessibilityService() {
             addLog("🔥 تم العثور على ${foundDeals.size} عروض وإضافتها للسلة.")
             val message = "🛒 **تمت الإضافة للسلة بنجاح:**\n\n" + foundDeals.joinToString("\n---\n")
             
-            // فتح السلة وتصويرها إذا كان الأندرويد يدعم ذلك
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, message)
             } else {
-                addLog("⚠️ إصدار الأندرويد قديم ولا يدعم تصوير الشاشة البرمجي. جاري إرسال النص فقط.")
+                addLog("⚠️ إصدار الأندرويد لديك لا يدعم تصوير الشاشة البرمجي. جاري إرسال النص فقط.")
                 sendTelegramMessage(token, chatId, message)
             }
         } else {
@@ -150,7 +148,6 @@ class DealScannerService : AccessibilityService() {
         if (node == null) return
         val text = node.text?.toString()?.trim() ?: node.contentDescription?.toString()?.trim()
         if (!text.isNullOrEmpty()) {
-            // التحقق من عدم تكرار نفس العقدة
             if (nodesList.none { it.text == text && it.node == node }) {
                 nodesList.add(NodeData(text, node))
             }
@@ -165,7 +162,6 @@ class DealScannerService : AccessibilityService() {
         val processedProducts = mutableSetOf<String>()
         val numRegex = Regex("^[0-9]{1,6}(?:\\.[0-9]{1,2})?$")
         
-        // إزالة التكرارات النصية للحفاظ على الترتيب الصحيح
         val uniqueNodes = nodesList.distinctBy { it.text }
 
         for (i in uniqueNodes.indices) {
@@ -203,7 +199,6 @@ class DealScannerService : AccessibilityService() {
                 if (processed.contains(productName)) return
                 
                 try {
-                    // الصعود للأب (الكارت) للبحث عن زر الإضافة
                     var parent = priceNode.parent
                     var clickSuccess = false
                     for (level in 0..3) { 
@@ -231,7 +226,6 @@ class DealScannerService : AccessibilityService() {
     private fun clickAddButtonInParent(node: AccessibilityNodeInfo): Boolean {
         if (node.isClickable) {
             val text = node.text?.toString() ?: node.contentDescription?.toString() ?: ""
-            // إذا كان الزر صغيراً أو يحتوي على + أو Add
             if (text.contains("+") || text.contains("Add", true) || text.contains("أضف", true) || text.isEmpty()) {
                 node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 return true
@@ -244,14 +238,14 @@ class DealScannerService : AccessibilityService() {
         return false
     }
 
-    @RequiresApi(Build.VERSION_CODES.R)
+    @TargetApi(30)
     private fun openCartAndSendReport(token: String, chatId: String, message: String) {
         addLog("🛒 جاري البحث عن السلة لفتحها...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
         if (cartNode != null) {
             clickNode(cartNode)
-            Thread.sleep(4000) // انتظار تحميل السلة
+            Thread.sleep(4000) 
             
             val screenshots = mutableListOf<ByteArray>()
             val shotsCount = when {
@@ -263,8 +257,6 @@ class DealScannerService : AccessibilityService() {
             for (i in 0 until shotsCount) {
                 val bitmap = takeScreenshotSync()
                 if (bitmap != null) {
-                    // قص الجزء العلوي (الهيدر) والسفلي (زر الدفع) 
-                    // يتم اقتطاع 15% من الأعلى و 15% من الأسفل
                     val topCrop = (bitmap.height * 0.15).toInt()
                     val bottomCrop = (bitmap.height * 0.15).toInt()
                     val croppedHeight = bitmap.height - topCrop - bottomCrop
@@ -297,12 +289,12 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    @RequiresApi(Build.VERSION_CODES.R)
+    @TargetApi(30)
     private fun takeScreenshotSync(): Bitmap? {
         var bitmap: Bitmap? = null
         val latch = CountDownLatch(1)
         
-        takeScreenshot(Display.DEFAULT_DISPLAY, applicationContext.mainExecutor, object : TakeScreenshotCallback {
+        takeScreenshot(Display.DEFAULT_DISPLAY, applicationContext.mainExecutor, object : AccessibilityService.TakeScreenshotCallback {
             override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                 val hwBuffer = screenshot.hardwareBuffer
                 bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
