@@ -160,8 +160,8 @@ class DealScannerService : AccessibilityService() {
     // منطق تطبيق رابيت (Rabbit Automation)
     // ==========================================
     private fun runRabbitAutomation(prefs: SharedPreferences) {
-        addLog("⏳ تم فتح رابيت.. ننتظر 12 ثانية للتحميل...")
-        Thread.sleep(12000)
+        addLog("⏳ تم فتح رابيت.. ننتظر 35 ثانية للتحميل...")
+        Thread.sleep(35000) // تم تعديل الوقت من 12000 إلى 35000
 
         // 1. الدخول إلى Supermarket+
         val supermarketNode = findNodeByText(rootInActiveWindow, "Supermarket+") ?: findNodeByText(rootInActiveWindow, "+سوبرماركت")
