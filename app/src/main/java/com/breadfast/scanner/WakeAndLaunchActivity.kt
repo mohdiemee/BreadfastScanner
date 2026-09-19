@@ -12,9 +12,13 @@ import android.view.WindowManager
 
 class WakeAndLaunchActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
+    private var appTypeToLaunch: String = "BREADFAST"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // قراءة نوع التطبيق من الـ Intent
+        appTypeToLaunch = intent.getStringExtra("APP_TYPE") ?: "BREADFAST"
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
@@ -62,22 +66,29 @@ class WakeAndLaunchActivity : Activity() {
 
     private fun launchTargetApp() {
         val prefs = getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
-        val targetApp = prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: "com.breadfast.application"
-        val intent = packageManager.getLaunchIntentForPackage(targetApp)
         
-        if (intent == null) {
-            log("❌ لم يتم العثور على التطبيق المستهدف.")
+        // تحديد الحزمة الصحيحة بناءً على نوع التطبيق
+        val targetPackage = if (appTypeToLaunch == "RABBIT") {
+            prefs.getString("RABBIT_PACKAGE", "com.rabbit.grocery") ?: "com.rabbit.grocery"
+        } else {
+            prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: "com.breadfast.application"
+        }
+        
+        val launchIntent = packageManager.getLaunchIntentForPackage(targetPackage)
+        
+        if (launchIntent == null) {
+            log("❌ لم يتم العثور على تطبيق [$appTypeToLaunch] (الحزمة: $targetPackage).")
             finish()
             return
         }
         
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         
         try {
-            startActivity(intent)
-            log("🚀 تم إضاءة الشاشة وإزالة القفل وفتح التطبيق المستهدف بنجاح.")
+            startActivity(launchIntent)
+            log("🚀 تم إضاءة الشاشة وإزالة القفل وفتح تطبيق [$appTypeToLaunch] بنجاح.")
         } catch (e: Exception) {
-            log("❌ فشل فتح التطبيق المستهدف: ${e.message}")
+            log("❌ فشل فتح تطبيق [$appTypeToLaunch]: ${e.message}")
             prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
         } finally {
             handler.postDelayed({ finish() }, 1500)
