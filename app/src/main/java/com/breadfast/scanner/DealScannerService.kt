@@ -114,20 +114,21 @@ class DealScannerService : AccessibilityService() {
         addLog("⏳ تم فتح رابيت.. ننتظر 12 ثانية للتحميل...")
         Thread.sleep(12000)
 
-        // 1. الدخول إلى Supermarket+
+        // 1. الدخول إلى Supermarket+ (تم إضافة findClickableParent لضمان النقر على الكارت وليس النص فقط)
         val supermarketNode = findNodeByText(rootInActiveWindow, "Supermarket+") ?: findNodeByText(rootInActiveWindow, "+سوبرماركت")
         if (supermarketNode != null) {
             addLog("🛒 تم العثور على سوبر ماركت+، جاري الدخول...")
-            clickNodeSafely(supermarketNode)
+            val clickableParent = findClickableParent(supermarketNode, 5) ?: supermarketNode
+            clickNodeSafely(clickableParent)
             Thread.sleep(6000)
         }
 
-        // إحداثيات الشريط السفلي الثابتة (منتصف الشاشة للسلة)
+        // إحداثيات الشريط السفلي (تم رفعها لـ 0.90 لتجنب شريط أزرار النظام السفلي)
         val metrics = resources.displayMetrics
         val cartX = metrics.widthPixels / 2f
-        val bottomY = metrics.heightPixels * 0.94f
+        val bottomY = metrics.heightPixels * 0.90f
 
-        // 2. النقر على السلة (في المنتصف أسفل الشاشة) لتفريغها
+        // 2. النقر على السلة لتفريغها (بالإحداثيات فقط لتجنب أي أخطاء نصية)
         addLog("🗑️ جاري فتح السلة لمسح المنتجات القديمة...")
         tapScreenPoint(cartX, bottomY)
         Thread.sleep(4000)
@@ -136,7 +137,7 @@ class DealScannerService : AccessibilityService() {
         if (emptyCart != null) {
             addLog("🛒 السلة فارغة بالفعل. جاري الرجوع...")
             performGlobalAction(GLOBAL_ACTION_BACK)
-            Thread.sleep(2000)
+            Thread.sleep(3000)
         } else {
             val clearBtn = findNodeByText(rootInActiveWindow, "Clear all") ?: findNodeByText(rootInActiveWindow, "فضي الكيس")
             if (clearBtn != null) {
@@ -150,24 +151,18 @@ class DealScannerService : AccessibilityService() {
                 Thread.sleep(3000)
             }
             performGlobalAction(GLOBAL_ACTION_BACK)
-            Thread.sleep(2000)
+            Thread.sleep(3000)
         }
 
-        // 3. فتح قسم العروض (أيقونة % أسفل الشاشة)
+        // 3. النقر على قسم العروض (تم إلغاء البحث بالنص لتجنب كارت الأكل، الاعتماد حصرياً على الإحداثيات)
         addLog("🎯 جاري الدخول لصفحة العروض...")
-        val offersNode = findNodeByText(rootInActiveWindow, "Promotions") ?: findNodeByText(rootInActiveWindow, "عروض")
-        if (offersNode != null) {
-            clickNodeSafely(offersNode)
-        } else {
-            // بديل: النقر بجوار السلة بناءً على لغة الجهاز
-            val isRtl = resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
-            val offersX = if (isRtl) metrics.widthPixels * 0.25f else metrics.widthPixels * 0.75f
-            tapScreenPoint(offersX, bottomY)
-        }
+        val isRtl = resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
+        val offersX = if (isRtl) metrics.widthPixels * 0.25f else metrics.widthPixels * 0.75f
+        tapScreenPoint(offersX, bottomY)
         Thread.sleep(6000)
 
         // إعدادات المسح (الحد الأدنى للخصم وسجل المنتجات)
-        val minDiscount = prefs.getInt("RABBIT_MIN_DISCOUNT", 30) // يمكنك تخصيص مفتاح منفصل لرابيت
+        val minDiscount = prefs.getInt("RABBIT_MIN_DISCOUNT", 30) 
         val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
         val cooldownMillis = cooldownHours * 60 * 60 * 1000L
         val historyMap = loadHistoryMap(prefs)
@@ -197,7 +192,7 @@ class DealScannerService : AccessibilityService() {
             }
             previousScreenContent = currentScreenContent
             totalScrolls++
-            swipeUp(0.75f, 0.35f, 500L) // سحب أسرع قليلاً لرابيت
+            swipeUp(0.75f, 0.35f, 500L) 
             Thread.sleep(1200) 
         }
 
@@ -218,6 +213,7 @@ class DealScannerService : AccessibilityService() {
             addLog("📉 لم يتم العثور على عروض مناسبة في رابيت حالياً.")
         }
     }
+
 
     private fun analyzeRabbitDeals(
         nodesList: List<NodeData>, minDiscount: Int, deals: MutableList<DealData>, 
