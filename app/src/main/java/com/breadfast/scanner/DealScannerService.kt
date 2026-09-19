@@ -48,10 +48,7 @@ class DealScannerService : AccessibilityService() {
         val prefs = getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("IS_ACTIVE", false) || !prefs.getBoolean("IS_AUTO_RUNNING", false)) return
 
-        // تحديد التطبيق الحالي المطلوب فحصه
         val currentTask = prefs.getString("CURRENT_TASK", "BREADFAST") ?: "BREADFAST"
-        
-        // جلب اسم الحزمة المناسبة للتطبيق مع توحيد القيمة الافتراضية لرابيت
         val targetApp = if (currentTask == "RABBIT") 
             prefs.getString("RABBIT_PACKAGE", "com.rabbit.grocery") ?: "com.rabbit.grocery"
         else 
@@ -89,14 +86,11 @@ class DealScannerService : AccessibilityService() {
                         addLog("⚠️ تم الرجوع للرئيسية (تعذر مسح الذاكرة).")
                     }
 
-                    // ⬇️ نظام تشغيل الفحص المنتظر (Queue System) بفاصل 20 ثانية ⬇️
                     val pendingTask = prefs.getString("PENDING_TASK", "")
                     if (!pendingTask.isNullOrEmpty()) {
-                        prefs.edit().remove("PENDING_TASK").apply() // مسح من الطابور
+                        prefs.edit().remove("PENDING_TASK").apply() 
                         addLog("⏳ الفحص اكتمل. جاري تشغيل فحص [$pendingTask] المنتظر بعد 20 ثانية...")
-                        
                         Thread.sleep(20000) 
-                        
                         val retryIntent = Intent(this@DealScannerService, AlarmReceiver::class.java).apply {
                             putExtra("APP_TYPE", pendingTask)
                         }
@@ -118,14 +112,9 @@ class DealScannerService : AccessibilityService() {
         val x = when (tab) {
             RabbitBottomTab.CART -> metrics.widthPixels * 0.50f
             RabbitBottomTab.PROMOTIONS -> {
-                if (isRtl) {
-                    metrics.widthPixels * 0.30f
-                } else {
-                    metrics.widthPixels * 0.70f
-                }
+                if (isRtl) metrics.widthPixels * 0.30f else metrics.widthPixels * 0.70f
             }
         }
-        // مركز شريط Rabbit السفلي
         val y = metrics.heightPixels * 0.955f
         addLog("🎯 Rabbit Nav: tab=$tab, x=${x.toInt()}, y=${y.toInt()}")
         return tapScreenPoint(x, y)
@@ -135,9 +124,7 @@ class DealScannerService : AccessibilityService() {
         val start = System.currentTimeMillis()
         while (System.currentTimeMillis() - start < timeoutMs) {
             val root = rootInActiveWindow
-            if (root != null && texts.any { text -> findNodeByText(root, text) != null }) {
-                return true
-            }
+            if (root != null && texts.any { text -> findNodeByText(root, text) != null }) return true
             Thread.sleep(250)
         }
         return false
@@ -146,9 +133,7 @@ class DealScannerService : AccessibilityService() {
     private fun findExactTextNode(node: AccessibilityNodeInfo?, target: String): AccessibilityNodeInfo? {
         if (node == null) return null
         val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
-        if (text.equals(target, ignoreCase = true)) {
-            return node
-        }
+        if (text.equals(target, ignoreCase = true)) return node
         for (i in 0 until node.childCount) {
             val result = findExactTextNode(node.getChild(i), target)
             if (result != null) return result
@@ -161,9 +146,8 @@ class DealScannerService : AccessibilityService() {
     // ==========================================
     private fun runRabbitAutomation(prefs: SharedPreferences) {
         addLog("⏳ تم فتح رابيت.. ننتظر 35 ثانية للتحميل...")
-        Thread.sleep(35000) // تم تعديل الوقت من 12000 إلى 35000
+        Thread.sleep(35000)
 
-        // 1. الدخول إلى Supermarket+
         val supermarketNode = findNodeByText(rootInActiveWindow, "Supermarket+") ?: findNodeByText(rootInActiveWindow, "+سوبرماركت")
         if (supermarketNode != null) {
             addLog("🛒 تم العثور على سوبر ماركت+، جاري الدخول...")
@@ -172,22 +156,14 @@ class DealScannerService : AccessibilityService() {
             Thread.sleep(6000)
         }
 
-        // 2. النقر على السلة لتفريغها
         addLog("🗑️ Rabbit: جاري فتح السلة لمسح المنتجات القديمة...")
-        if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
-            addLog("❌ Rabbit: فشل إرسال نقرة السلة.")
-            return
-        }
+        if (!tapRabbitBottomTab(RabbitBottomTab.CART)) return
         
         val cartOpened = waitForAnyText("Deserted cart?", "إيه الصحراء دي؟", "Clear all", "فضي الكيس", "My Cart", "الكيس", timeoutMs = 6000L)
-        if (!cartOpened) {
-            addLog("❌ Rabbit: لم يتم فتح صفحة السلة؛ إيقاف العملية لتجنب الضغط في صفحة خاطئة.")
-            return
-        }
+        if (!cartOpened) return
 
         val emptyCart = findNodeByText(rootInActiveWindow, "Deserted cart?") ?: findNodeByText(rootInActiveWindow, "إيه الصحراء دي؟")
         if (emptyCart != null) {
-            addLog("🛒 السلة فارغة بالفعل. جاري الرجوع...")
             performGlobalAction(GLOBAL_ACTION_BACK)
             Thread.sleep(3000)
         } else {
@@ -195,7 +171,6 @@ class DealScannerService : AccessibilityService() {
             if (clearBtn != null) {
                 clickNodeSafely(clearBtn)
                 Thread.sleep(1500)
-                // استخدام التطابق الدقيق لزر التأكيد لمنع النقر على الكلمة الموجودة بالخلفية
                 val confirmBtn = findExactTextNode(rootInActiveWindow, "Clear") ?: findExactTextNode(rootInActiveWindow, "تمام")
                 if (confirmBtn != null) {
                     clickNodeSafely(confirmBtn)
@@ -207,22 +182,13 @@ class DealScannerService : AccessibilityService() {
             Thread.sleep(3000)
         }
 
-        // 3. النقر على قسم العروض
         addLog("🎯 Rabbit: جاري فتح صفحة العروض...")
-        if (!tapRabbitBottomTab(RabbitBottomTab.PROMOTIONS)) {
-            addLog("❌ Rabbit: فشل إرسال نقرة صفحة العروض.")
-            return
-        }
+        if (!tapRabbitBottomTab(RabbitBottomTab.PROMOTIONS)) return
         
         val promotionsOpened = waitForAnyText("Promotions", "عروض", "Promo Codes", "أكواد الخصم", timeoutMs = 7000L)
-        if (!promotionsOpened) {
-            addLog("❌ Rabbit: لم يتم الوصول إلى Promotions؛ تم إيقاف الفحص لمنع المسار الخاطئ.")
-            return
-        }
-        addLog("✅ Rabbit: تم فتح صفحة العروض بنجاح.")
+        if (!promotionsOpened) return
         Thread.sleep(1500)
 
-        // إعدادات المسح
         val minDiscount = prefs.getInt("RABBIT_MIN_DISCOUNT", 30) 
         val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
         val cooldownMillis = cooldownHours * 60 * 60 * 1000L
@@ -235,9 +201,8 @@ class DealScannerService : AccessibilityService() {
         var totalScrolls = 0
         val metrics = resources.displayMetrics
         val safeTop = metrics.heightPixels * 0.15f
-        val safeBottom = metrics.heightPixels * 0.82f // تجنب الشريط السفلي
+        val safeBottom = metrics.heightPixels * 0.82f 
         
-        // 4. المسح والإضافة
         while (totalScrolls < 500) {
             val visibleNodes = mutableListOf<NodeData>()
             extractNodes(rootInActiveWindow, visibleNodes, safeTop, safeBottom)
@@ -254,30 +219,24 @@ class DealScannerService : AccessibilityService() {
             }
             previousScreenContent = currentScreenContent
             totalScrolls++
-            swipeUp(0.75f, 0.50f, 600L)
+            swipeUp(0.75f, 0.50f, 800L) 
             Thread.sleep(1200) 
         }
 
-        // 5. فتح السلة مرة أخرى وإرسال التقرير
         val token = prefs.getString("BOT_TOKEN", "") ?: ""
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
             addLog("🛒 Rabbit: جاري فتح السلة النهائية لإرسال التقرير...")
-            if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
-                addLog("❌ Rabbit: لم يمكن فتح السلة النهائية لإرسال التقرير.")
-                return
-            }
+            if (!tapRabbitBottomTab(RabbitBottomTab.CART)) return
             
             val finalCartOpened = waitForAnyText("My Cart", "الكيس", "Clear all", "فضي الكيس", "Deserted cart?", "إيه الصحراء دي؟", timeoutMs = 6000L)
-            if (!finalCartOpened) {
-                addLog("❌ Rabbit: لم تتأكد صفحة السلة النهائية؛ لن يتم تصوير صفحة خاطئة.")
-                return
-            }
+            if (!finalCartOpened) return
             Thread.sleep(4000)
 
             if (Build.VERSION.SDK_INT >= 30) {
-                openCartAndSendReport(token, chatId, foundDeals)
+                // إخبار الدالة أن السلة مفتوحة بالفعل لتجنب نقر زر الرجوع بالخطأ
+                openCartAndSendReport(token, chatId, foundDeals, isCartAlreadyOpen = true)
             } else {
                 sendChunksAsText(token, chatId, foundDeals.map { it.dealText }.chunked(5))
             }
@@ -297,15 +256,12 @@ class DealScannerService : AccessibilityService() {
             val current = uniqueNodes[i]
             val text = current.text.trim()
             
-            // 1. اكتشاف باج الخصم بمرونة عالية (أي نص قصير يحتوي على % ورقم) لتجاوز مشاكل اتجاه اللغة والمسافات
             if (text.contains("%")) {
                 val match = Regex("(\\d{1,2})").find(text)
                 if (match != null && text.length <= 8) {
                     val discountPercent = match.value.toIntOrNull() ?: continue
                     
                     if (discountPercent >= minDiscount) {
-                        
-                        // 2. البحث عن اسم المنتج (أول نص طويل بعد الخصم ولا يحتوي على مجرد أرقام/نسب)
                         var productName = "منتج رابيت مميز"
                         for (k in i + 1..minOf(i + 4, uniqueNodes.size - 1)) {
                             val candidate = uniqueNodes[k].text.trim()
@@ -315,42 +271,32 @@ class DealScannerService : AccessibilityService() {
                             }
                         }
 
-                        // التحقق من سجل الإرسال لمنع التكرار
                         if (processed.contains(productName)) continue
                         val lastSent = historyMap[productName]
                         if (lastSent != null && (System.currentTimeMillis() - lastSent) < cooldownMillis) continue
 
-                        // 3. النقر على الزر (+) الأصفر
                         var plusClicked = false
-                        
-                        // المحاولة الأولى: البحث المباشر عن الزر + نصياً في العقد القريبة
                         for (j in i..minOf(i + 8, uniqueNodes.size - 1)) {
                             val pNode = uniqueNodes[j].node
                             val pText = pNode.text?.toString()?.trim() ?: ""
                             val pDesc = pNode.contentDescription?.toString()?.trim() ?: ""
-                            
                             if (pText == "+" || pDesc == "+" || pText.equals("Add", true) || pDesc.equals("Add", true)) {
                                 plusClicked = clickNodeSafely(pNode)
                                 if (plusClicked) break
                             }
                         }
                         
-                        // المحاولة الثانية: استهداف كارت المنتج ككل والبحث داخله عن زر قابل للنقر
                         if (!plusClicked) {
                             val productCard = findRabbitProductCard(current.node)
-                            if (productCard != null) {
-                                plusClicked = forceClickAddButton(productCard)
-                            }
+                            if (productCard != null) plusClicked = forceClickAddButton(productCard)
                         }
 
-                        // المحاولة الثالثة: البحث عن الزر الدائري الأصفر برمجياً (عن طريق الأبعاد)
                         if (!plusClicked) {
                             for (j in i + 1..minOf(i + 8, uniqueNodes.size - 1)) {
                                 val pNode = uniqueNodes[j].node
                                 val rect = Rect()
                                 pNode.getBoundsInScreen(rect)
                                 val combined = ("${pNode.text} ${pNode.contentDescription}").trim()
-                                // أزرار رابيت مربعة/دائرية وصغيرة
                                 if (pNode.isClickable && combined.isBlank() && rect.width() in 40..200 && rect.height() in 40..200) {
                                     plusClicked = clickNodeSafely(pNode)
                                     if (plusClicked) break
@@ -360,8 +306,7 @@ class DealScannerService : AccessibilityService() {
 
                         if (plusClicked) {
                             val cleanName = productName.replace("\n", " ").trim()
-                            val dealText = "$cleanName بخصم $discountPercent%"
-                            deals.add(DealData(originalName = cleanName, dealText = dealText))
+                            deals.add(DealData(originalName = cleanName, dealText = "$cleanName بخصم $discountPercent%"))
                             processed.add(productName)
                             historyMap[productName] = System.currentTimeMillis()
                             saveHistoryMap(prefs, historyMap)
@@ -379,7 +324,6 @@ class DealScannerService : AccessibilityService() {
             val node = current ?: break
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            // كروت رابيت تأخذ نصف الشاشة تقريباً (بين 25% و 60% من عرض الشاشة)
             if (rect.width() > screenWidth * 0.25 && rect.width() < screenWidth * 0.60 && rect.height() > 200) {
                 return node
             }
@@ -403,8 +347,7 @@ class DealScannerService : AccessibilityService() {
             
             val clearAllNode = findNodeByText(rootInActiveWindow, "مسح الكل") ?: findNodeByText(rootInActiveWindow, "Clear All")
             if (clearAllNode != null) {
-                val clickedMainClear = clickNodeSafely(clearAllNode)
-                if (clickedMainClear) {
+                if (clickNodeSafely(clearAllNode)) {
                     val confirmButton = waitForBottomSheetClearButton(6000)
                     if (confirmButton != null) clickConfirmClearButton(confirmButton)
                     Thread.sleep(4000)
@@ -466,7 +409,8 @@ class DealScannerService : AccessibilityService() {
 
         if (foundDeals.isNotEmpty()) {
             if (Build.VERSION.SDK_INT >= 30) {
-                openCartAndSendReport(token, chatId, foundDeals)
+                // إخبار الدالة أن السلة غير مفتوحة ويجب الضغط على أيقونتها
+                openCartAndSendReport(token, chatId, foundDeals, isCartAlreadyOpen = false)
             } else {
                 sendChunksAsText(token, chatId, foundDeals.filter { it.originalName != "منتج مميز" }.map { it.dealText }.chunked(5))
             }
@@ -483,9 +427,7 @@ class DealScannerService : AccessibilityService() {
         if (historyStr.isNotEmpty()) {
             historyStr.split("||").forEach { entry ->
                 val parts = entry.split("::")
-                if (parts.size == 2) {
-                    historyMap[parts[0]] = parts[1].toLongOrNull() ?: 0L
-                }
+                if (parts.size == 2) historyMap[parts[0]] = parts[1].toLongOrNull() ?: 0L
             }
         }
         return historyMap
@@ -508,9 +450,7 @@ class DealScannerService : AccessibilityService() {
                 nodesList.add(NodeData(text, node))
             }
         }
-        for (i in 0 until node.childCount) {
-            extractNodes(node.getChild(i), nodesList, safeTop, safeBottom)
-        }
+        for (i in 0 until node.childCount) extractNodes(node.getChild(i), nodesList, safeTop, safeBottom)
     }
 
     private fun analyzeAndAddToCart(
@@ -558,9 +498,7 @@ class DealScannerService : AccessibilityService() {
                 
                 try {
                     val productCard = findProductCard(priceNode)
-                    if (productCard != null && forceClickAddButton(productCard)) {
-                        addedItemsCount++
-                    }
+                    if (productCard != null && forceClickAddButton(productCard)) addedItemsCount++
                     var cleanName = productName.replace("\n", " ").trim()
                     cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
                     deals.add(DealData(originalName = productName, dealText = "$cleanName ب $newPrice جنيه بخصم $discountPercent%"))
@@ -579,9 +517,7 @@ class DealScannerService : AccessibilityService() {
             val node = current ?: break
             val rect = Rect()
             node.getBoundsInScreen(rect)
-            if (rect.width() > screenWidth * 0.18 && rect.width() < screenWidth * 0.48 && rect.height() > 150) {
-                return node
-            }
+            if (rect.width() > screenWidth * 0.18 && rect.width() < screenWidth * 0.48 && rect.height() > 150) return node
             current = node.parent
         }
         return priceNode.parent
@@ -626,18 +562,22 @@ class DealScannerService : AccessibilityService() {
     }
 
     @TargetApi(30)
-    private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>) {
-        val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة") 
-            ?: findNodeByText(rootInActiveWindow, "الكيس")
+    private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false) {
+        
+        // التحقق من فتح السلة فقط إذا لم تكن مفتوحة بالفعل (لتجنب الخروج منها في رابيت)
+        if (!isCartAlreadyOpen) {
+            val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة") ?: findNodeByText(rootInActiveWindow, "الكيس")
+            if (cartNode != null) {
+                clickNodeSafely(cartNode)
+                Thread.sleep(5000) 
+            }
+        }
         
         val shotsCount = Math.ceil(deals.size / 5.0).toInt()
         
-        if (cartNode != null || deals.isNotEmpty()) {
-            if (cartNode != null) clickNodeSafely(cartNode)
-            Thread.sleep(5000) 
-            
-            val safeTopCart = resources.displayMetrics.heightPixels * 0.21f
-            val safeBottomCart = resources.displayMetrics.heightPixels * 0.81f 
+        if (deals.isNotEmpty()) {
+            val safeTopCart = resources.displayMetrics.heightPixels * 0.20f
+            val safeBottomCart = resources.displayMetrics.heightPixels * 0.82f 
             
             for (i in 0 until shotsCount) {
                 val bitmap = takeScreenshotSync()
@@ -645,8 +585,8 @@ class DealScannerService : AccessibilityService() {
                 var imageBytes: ByteArray? = null
                 
                 if (bitmap != null) {
-                    val topCrop = (bitmap.height * 0.21).toInt()
-                    val bottomCrop = (bitmap.height * 0.19).toInt()
+                    val topCrop = (bitmap.height * 0.20).toInt()
+                    val bottomCrop = (bitmap.height * 0.18).toInt()
                     val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
                     val stream = ByteArrayOutputStream()
                     croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
@@ -659,8 +599,11 @@ class DealScannerService : AccessibilityService() {
                     for (deal in deals) {
                         if (!deal.isAssigned) {
                             val cleanName = deal.originalName.replace("\n", " ").trim()
-                            val shortName = if (cleanName.length > 12) cleanName.substring(0, 12) else cleanName
-                            if (screenText.contains(cleanName, ignoreCase = true) || screenText.contains(shortName, ignoreCase = true)) {
+                            // استخدام فلتر الكلمات بدلاً من الحروف المحددة لتفادي تشابه الأسماء الطويلة
+                            val words = cleanName.split(" ").filter { it.length > 2 }.take(2)
+                            val matchCount = words.count { screenText.contains(it, ignoreCase = true) }
+                            
+                            if (matchCount >= 1 || cleanName.contains("مميز")) {
                                 currentChunk.add(deal.dealText)
                                 deal.isAssigned = true
                             }
@@ -674,19 +617,28 @@ class DealScannerService : AccessibilityService() {
                     deals.filter { it.dealText in extras }.forEach { it.isAssigned = false }
                 }
 
+                // خطة بديلة: إذا فشل التطابق النصي لأي سبب، أرفق 5 منتجات غير مرسلة للصورة إجبارياً بدلاً من تخطيها
+                if (currentChunk.isEmpty() && deals.any { !it.isAssigned }) {
+                    val unassigned = deals.filter { !it.isAssigned }.take(5)
+                    unassigned.forEach { 
+                        currentChunk.add(it.dealText)
+                        it.isAssigned = true
+                    }
+                    addLog("⚠️ تطابق نصي ضعيف، تم إرفاق ${currentChunk.size} منتجات احتياطياً.")
+                }
+
                 if (currentChunk.isNotEmpty() && imageBytes != null) {
                     val prefix = if (i == 0) "عروض ممتازة\n" else "ودول كمان\n"
                     val caption = prefix + currentChunk.joinToString("\n\n")
+                    addLog("📸 إرسال صورة تحتوي على ${currentChunk.size} منتجات...")
                     sendTelegramPhotoMultipart(token, chatId, imageBytes, caption.take(1020))
                 }
                 
                 if (i < shotsCount - 1) {
-                    swipeUp(0.78f, 0.22f, 1200L)
+                    swipeUp(0.80f, 0.20f, 1000L) // سكرول لأسفل السلة لرؤية المنتجات الأخرى
                     Thread.sleep(2000)
                 }
             }
-        } else {
-            sendChunksAsText(token, chatId, deals.filter { it.originalName != "منتج مميز" }.map { it.dealText }.chunked(5))
         }
     }
 
@@ -738,8 +690,14 @@ class DealScannerService : AccessibilityService() {
             outputStream.writeBytes("\r\n--$boundary--\r\n")
             outputStream.flush()
             outputStream.close()
+            
+            if (connection.responseCode in 200..299) {
+                addLog("✅ تم رفع الصورة بنجاح.")
+            } else {
+                addLog("❌ فشل الرفع: ${connection.responseCode}")
+            }
             connection.disconnect()
-        } catch (e: Exception) { }
+        } catch (e: Exception) { addLog("❌ خطأ رفع الصورة: ${e.message}") }
     }
 
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
