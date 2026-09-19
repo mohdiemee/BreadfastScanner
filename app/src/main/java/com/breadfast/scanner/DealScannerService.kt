@@ -23,6 +23,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
+// === الكلاس لربط اسم المنتج الأصلي مع النص التسويقي وحالة الإرسال ===
 data class DealData(val originalName: String, val dealText: String, var isAssigned: Boolean = false)
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
 
@@ -235,6 +236,15 @@ class DealScannerService : AccessibilityService() {
             if (result != null) return result
         }
         return null
+    }
+
+    private fun extractAllTextsFromCard(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
+        if (node == null) return
+        val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+        if (t.isNotEmpty()) texts.add(t)
+        for (i in 0 until node.childCount) {
+            extractAllTextsFromCard(node.getChild(i), texts)
+        }
     }
 
     // ==========================================
@@ -810,8 +820,14 @@ class DealScannerService : AccessibilityService() {
             outputStream.writeBytes("\r\n--$boundary--\r\n")
             outputStream.flush()
             outputStream.close()
+            
+            if (connection.responseCode in 200..299) {
+                addLog("✅ تم رفع الصورة بنجاح.")
+            } else {
+                addLog("❌ فشل الرفع: ${connection.responseCode}")
+            }
             connection.disconnect()
-        } catch (e: Exception) { }
+        } catch (e: Exception) { addLog("❌ خطأ رفع الصورة: ${e.message}") }
     }
 
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
@@ -855,5 +871,53 @@ class DealScannerService : AccessibilityService() {
             node = current.parent
         }
         return null
+    }
+
+    private fun collectNodesByExactText(node: AccessibilityNodeInfo?, target: String, result: MutableList<AccessibilityNodeInfo>) {
+        if (node == null) return
+        if (normalizedText(node).equals(target, ignoreCase = true)) result.add(node)
+        for (i in 0 until node.childCount) collectNodesByExactText(node.getChild(i), target, result)
+    }
+
+    private fun findBottomSheetClearConfirmButton(): AccessibilityNodeInfo? {
+        val root = rootInActiveWindow ?: return null
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectNodesByExactText(root, "مسح الكل", candidates)
+        collectNodesByExactText(root, "Clear All", candidates)
+        return candidates.mapNotNull { findClickableParent(it) ?: it.takeIf { node -> node.isClickable && node.isEnabled } }
+            .maxByOrNull { getRect(it).centerY() }
+    }
+
+    private fun waitForBottomSheetClearButton(timeoutMs: Long = 6000L): AccessibilityNodeInfo? {
+        val startTime = System.currentTimeMillis()
+        while (System.currentTimeMillis() - startTime < timeoutMs) {
+            val button = findBottomSheetClearConfirmButton()
+            if (button != null) return button
+            Thread.sleep(250)
+        }
+        return null
+    }
+
+    private fun clickConfirmClearButton(button: AccessibilityNodeInfo): Boolean {
+        try {
+            if (!button.refresh()) return false
+            if (button.isClickable && button.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+            val rect = getRect(button)
+            return tapScreenPoint(rect.centerX().toFloat(), rect.centerY().toFloat())
+        } catch (e: Exception) { return false }
+    }
+
+    private fun tapScreenPoint(x: Float, y: Float): Boolean {
+        val latch = CountDownLatch(1)
+        var completed = false
+        val gesture = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(Path().apply { moveTo(x, y) }, 0, 100)).build()
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) { completed = true; latch.countDown() }
+            override fun onCancelled(gestureDescription: GestureDescription?) { completed = false; latch.countDown() }
+        }, null)
+        if (!dispatched) return false
+        latch.await(2, TimeUnit.SECONDS)
+        Thread.sleep(500)
+        return completed
     }
 }
