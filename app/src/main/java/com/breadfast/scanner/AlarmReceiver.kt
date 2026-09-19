@@ -21,8 +21,8 @@ class AlarmReceiver : BroadcastReceiver() {
         val runTimesKey = if (appType == "RABBIT") "RABBIT_RUN_TIMES" else "BREADFAST_RUN_TIMES"
         val runTimes = prefs.getString(runTimesKey, "") ?: ""
         
-        // استدعاء المجدول (ستحتاج لاحقاً لتعديل AlarmScheduler ليقبل appType إذا أردت فصل المواعيد تماماً)
-        AlarmScheduler.scheduleAll(context, runTimes)
+        // استدعاء المجدول بالدالة الجديدة مع تمرير نوع التطبيق (appType)
+        AlarmScheduler.scheduleAllForApp(context, appType, runTimes)
 
         // ⬇️ نظام الحماية من التقاطع (Anti-Collision System) ⬇️
         if (prefs.getBoolean("IS_AUTO_RUNNING", false)) {
