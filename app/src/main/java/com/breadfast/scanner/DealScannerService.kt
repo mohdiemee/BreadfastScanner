@@ -22,6 +22,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
+// === الكلاس الجديد لربط اسم المنتج الأصلي مع النص التسويقي وحالة الإرسال ===
+data class DealData(val originalName: String, val dealText: String, var isAssigned: Boolean = false)
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
 
 class DealScannerService : AccessibilityService() {
@@ -175,28 +177,25 @@ class DealScannerService : AccessibilityService() {
         }
 
         val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
-        val foundDeals = mutableListOf<String>()
+        val foundDeals = mutableListOf<DealData>() // === تم تغيير النوع ليدعم المطابقة ===
         val processedProducts = mutableSetOf<String>()
         
         var previousScreenContent = ""
         var emptyScrolls = 0
         var totalScrolls = 0
         
-        // حساب أبعاد المنطقة الآمنة للشاشة
         val displayMetrics = resources.displayMetrics
         val safeTop = displayMetrics.heightPixels * 0.15f
         val safeBottom = displayMetrics.heightPixels * 0.85f
         
         while (totalScrolls < 1000) {
             val visibleNodes = mutableListOf<NodeData>()
-            // تمرير إحداثيات المنطقة الآمنة للدالة
             extractNodes(rootInActiveWindow, visibleNodes, safeTop, safeBottom)
             
             val currentScreenContent = visibleNodes.map { it.text }.distinct().sorted().joinToString("|")
             
             analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
             
-            // التأخير الأول (حسب التعديل الجديد)
             Thread.sleep(900)
 
             if (currentScreenContent == previousScreenContent) {
@@ -212,10 +211,7 @@ class DealScannerService : AccessibilityService() {
             previousScreenContent = currentScreenContent
             totalScrolls++
             
-            // السحب بالتوقيتات الجديدة
             swipeUp(0.8f, 0.5f, 400L)
-            
-            // التأخير الثاني (حسب التعديل الجديد)
             Thread.sleep(1100) 
         }
 
@@ -228,21 +224,20 @@ class DealScannerService : AccessibilityService() {
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals)
             } else {
-                sendChunksAsText(token, chatId, foundDeals.chunked(5))
+                val chunks = foundDeals.map { it.dealText }.chunked(5)
+                sendChunksAsText(token, chatId, chunks)
             }
         } else {
             addLog("📉 لم يتم العثور على عروض مناسبة أو جميع العروض تم إرسالها خلال فترة $cooldownHours ساعات الماضية.")
         }
     }
 
-    // === الدالة المحدثة مع فلتر "المنطقة الآمنة" ===
     private fun extractNodes(node: AccessibilityNodeInfo?, nodesList: MutableList<NodeData>, safeTop: Float, safeBottom: Float) {
         if (node == null) return
         
         val rect = Rect()
         node.getBoundsInScreen(rect)
         
-        // التأكد من أن العنصر بأكمله يقع داخل المنطقة الآمنة (يستبعد العناصر المقطوعة)
         val isSafe = rect.top >= safeTop && rect.bottom <= safeBottom
         
         if (isSafe) {
@@ -262,7 +257,7 @@ class DealScannerService : AccessibilityService() {
     private fun analyzeAndAddToCart(
         nodesList: List<NodeData>, 
         minDiscount: Int, 
-        deals: MutableList<String>, 
+        deals: MutableList<DealData>, 
         processedProducts: MutableSet<String>,
         historyMap: MutableMap<String, Long>,
         cooldownMillis: Long,
@@ -313,7 +308,7 @@ class DealScannerService : AccessibilityService() {
         nameIdx: Int, 
         uniqueNodes: List<NodeData>, 
         minDiscount: Int, 
-        deals: MutableList<String>, 
+        deals: MutableList<DealData>, 
         processed: MutableSet<String>, 
         priceNode: AccessibilityNodeInfo,
         historyMap: MutableMap<String, Long>,
@@ -355,7 +350,9 @@ class DealScannerService : AccessibilityService() {
                     cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
                     
                     val dealText = "$cleanName ب $newPrice جنيه بخصم $discountPercent%"
-                    deals.add(dealText)
+                    
+                    // === التعديل: تخزين الكائن الذكي المطابق للاسم الحقيقي والنص ===
+                    deals.add(DealData(originalName = productName, dealText = dealText))
                     
                     processed.add(productName)
                     
@@ -436,21 +433,28 @@ class DealScannerService : AccessibilityService() {
     }
 
     @TargetApi(30)
-    private fun openCartAndSendReport(token: String, chatId: String, deals: List<String>) {
+    private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>) {
         addLog("🛒 جاري فتح السلة لتصوير التقرير...")
         val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة")
         
-        val chunks = deals.chunked(5)
-        val shotsCount = chunks.size
+        val totalDeals = deals.size
+        // حساب عدد الصور المطلوبة لضمان تغطية كل المنتجات (5 منتجات لكل صورة)
+        val shotsCount = Math.ceil(totalDeals / 5.0).toInt()
         
         if (cartNode != null) {
             clickNodeSafely(cartNode)
             Thread.sleep(5000) 
             
-            val screenshots = mutableListOf<ByteArray>()
+            val displayMetrics = resources.displayMetrics
+            // إحداثيات السلة المتطابقة مع الصورة لجمع النصوص
+            val safeTopCart = displayMetrics.heightPixels * 0.21f
+            val safeBottomCart = displayMetrics.heightPixels * 0.81f 
             
             for (i in 0 until shotsCount) {
                 val bitmap = takeScreenshotSync()
+                var currentChunk = mutableListOf<String>()
+                var imageBytes: ByteArray? = null
+                
                 if (bitmap != null) {
                     val topCrop = (bitmap.height * 0.21).toInt()
                     val bottomCrop = (bitmap.height * 0.19).toInt()
@@ -459,9 +463,56 @@ class DealScannerService : AccessibilityService() {
                     val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, croppedHeight)
                     val stream = ByteArrayOutputStream()
                     croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                    screenshots.add(stream.toByteArray())
+                    imageBytes = stream.toByteArray()
+                    
+                    // === عملية المطابقة الذكية ===
+                    // 1. قراءة النصوص الظاهرة في المنطقة الآمنة للسلة الآن
+                    val visibleNodes = mutableListOf<NodeData>()
+                    extractNodes(rootInActiveWindow, visibleNodes, safeTopCart, safeBottomCart)
+                    val screenText = visibleNodes.joinToString(" ") { it.text.replace("\n", " ") }
+                    
+                    // 2. البحث عن المنتجات التي لم يتم إرسالها بعد داخل النصوص الظاهرة
+                    for (deal in deals) {
+                        if (!deal.isAssigned) {
+                            val cleanName = deal.originalName.replace("\n", " ").trim()
+                            // أخذ جزء من الاسم تجنباً لمشكلة قص النصوص الطويلة
+                            val shortName = if (cleanName.length > 12) cleanName.substring(0, 12) else cleanName
+                            
+                            // إذا تطابق النص المعروض مع الاسم المحفوظ، قم بإرفاقه مع هذه الصورة
+                            if (screenText.contains(cleanName, ignoreCase = true) || screenText.contains(shortName, ignoreCase = true)) {
+                                currentChunk.add(deal.dealText)
+                                deal.isAssigned = true
+                            }
+                        }
+                    }
                 } else {
                     addLog("⚠️ فشل التقاط الصورة رقم ${i+1}")
+                }
+                
+                // خطة بديلة: إذا فشلت المطابقة لأي سبب (تهنيج الشاشة مثلاً)، خذ 5 منتجات لم يتم إرسالها بعد
+                if (currentChunk.isEmpty()) {
+                    val unassigned = deals.filter { !it.isAssigned }.take(5)
+                    unassigned.forEach { 
+                        currentChunk.add(it.dealText)
+                        it.isAssigned = true
+                    }
+                }
+                
+                // تأمين: ضمان ألا يتجاوز النص المعروض 5 منتجات كحد أقصى لكل صورة
+                if (currentChunk.size > 5) {
+                    val extras = currentChunk.drop(5)
+                    currentChunk = currentChunk.take(5).toMutableList()
+                    deals.filter { it.dealText in extras }.forEach { it.isAssigned = false }
+                }
+
+                // إرسال الصورة وما يطابقها من نصوص
+                if (currentChunk.isNotEmpty() && imageBytes != null) {
+                    addLog("📸 تم إرسال الصورة رقم ${i+1} مع ${currentChunk.size} منتجات متطابقة.")
+                    val prefix = if (i == 0) "عروض ممتازة علي بريدفاست\n" else "ودول كمان\n"
+                    val caption = prefix + currentChunk.joinToString("\n\n")
+                    val finalCaption = if (caption.length > 1024) caption.substring(0, 1020) + "..." else caption
+                    
+                    sendTelegramPhotoMultipart(token, chatId, imageBytes, finalCaption)
                 }
                 
                 if (i < shotsCount - 1) {
@@ -470,29 +521,17 @@ class DealScannerService : AccessibilityService() {
                 }
             }
             
-            if (screenshots.isNotEmpty()) {
-                addLog("📸 تم التصوير. جاري الرفع...")
-                for (i in chunks.indices) {
-                    val chunk = chunks[i]
-                    val prefix = if (i == 0) "عروض ممتازة علي بريدفاست\n" else "ودول كمان\n"
-                    val caption = prefix + chunk.joinToString("\n\n")
-                    
-                    val finalCaption = if (caption.length > 1024) caption.substring(0, 1020) + "..." else caption
-                    
-                    val imageBytes = screenshots.getOrNull(i)
-                    if (imageBytes != null) {
-                        sendTelegramPhotoMultipart(token, chatId, imageBytes, finalCaption)
-                    } else {
-                        sendTelegramMessage(token, chatId, finalCaption)
-                    }
-                }
-            } else {
-                sendChunksAsText(token, chatId, chunks)
+            // كنس احتياطي: إرسال أي منتجات لم يتم التعرف عليها أو مطابقتها كرسائل نصية فقط
+            val leftoverUnassigned = deals.filter { !it.isAssigned }
+            if (leftoverUnassigned.isNotEmpty()) {
+                val leftoverChunks = leftoverUnassigned.map { it.dealText }.chunked(5)
+                sendChunksAsText(token, chatId, leftoverChunks)
             }
             
         } else {
             addLog("❌ زر السلة غير موجود.")
-            sendChunksAsText(token, chatId, chunks)
+            val allDealsChunks = deals.map { it.dealText }.chunked(5)
+            sendChunksAsText(token, chatId, allDealsChunks)
         }
     }
 
