@@ -235,7 +235,6 @@ class DealScannerService : AccessibilityService() {
             Thread.sleep(4000)
 
             if (Build.VERSION.SDK_INT >= 30) {
-                // إخبار الدالة أن السلة مفتوحة بالفعل لتجنب نقر زر الرجوع بالخطأ
                 openCartAndSendReport(token, chatId, foundDeals, isCartAlreadyOpen = true)
             } else {
                 sendChunksAsText(token, chatId, foundDeals.map { it.dealText }.chunked(5))
@@ -281,7 +280,8 @@ class DealScannerService : AccessibilityService() {
                             val pText = pNode.text?.toString()?.trim() ?: ""
                             val pDesc = pNode.contentDescription?.toString()?.trim() ?: ""
                             if (pText == "+" || pDesc == "+" || pText.equals("Add", true) || pDesc.equals("Add", true)) {
-                                plusClicked = clickNodeSafely(pNode)
+                                // استخدام النقر الفيزيائي الصارم لمنع النقر المزدوج
+                                plusClicked = clickNodeCenter(pNode)
                                 if (plusClicked) break
                             }
                         }
@@ -298,7 +298,7 @@ class DealScannerService : AccessibilityService() {
                                 pNode.getBoundsInScreen(rect)
                                 val combined = ("${pNode.text} ${pNode.contentDescription}").trim()
                                 if (pNode.isClickable && combined.isBlank() && rect.width() in 40..200 && rect.height() in 40..200) {
-                                    plusClicked = clickNodeSafely(pNode)
+                                    plusClicked = clickNodeCenter(pNode)
                                     if (plusClicked) break
                                 }
                             }
@@ -409,7 +409,6 @@ class DealScannerService : AccessibilityService() {
 
         if (foundDeals.isNotEmpty()) {
             if (Build.VERSION.SDK_INT >= 30) {
-                // إخبار الدالة أن السلة غير مفتوحة ويجب الضغط على أيقونتها
                 openCartAndSendReport(token, chatId, foundDeals, isCartAlreadyOpen = false)
             } else {
                 sendChunksAsText(token, chatId, foundDeals.filter { it.originalName != "منتج مميز" }.map { it.dealText }.chunked(5))
@@ -498,6 +497,7 @@ class DealScannerService : AccessibilityService() {
                 
                 try {
                     val productCard = findProductCard(priceNode)
+                    // نستخدم clickNodeCenter هنا أيضاً لتوحيد أمان النقر في كلا التطبيقين
                     if (productCard != null && forceClickAddButton(productCard)) addedItemsCount++
                     var cleanName = productName.replace("\n", " ").trim()
                     cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
@@ -532,12 +532,12 @@ class DealScannerService : AccessibilityService() {
         if (combined.contains("favorite") || combined.contains("مفضلة")) return false
 
         val isCartAddButton = text == "+" || desc == "+" || combined.contains("add to cart") || combined.contains("أضف إلى السلة")
-        if (isCartAddButton) return clickNodeSafely(node)
+        if (isCartAddButton) return clickNodeCenter(node)
 
         val rect = Rect()
         node.getBoundsInScreen(rect)
         if (node.isClickable && combined.isBlank() && rect.width() in 40..250 && rect.height() in 40..250) {
-            return clickNodeSafely(node)
+            return clickNodeCenter(node)
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
@@ -555,16 +555,23 @@ class DealScannerService : AccessibilityService() {
                     return true
                 }
             }
+            return clickNodeCenter(node)
+        } catch (e: Exception) { return false }
+    }
+
+    // دالة جديدة للنقر الفيزيائي الصارم لمنع النقر المزدوج
+    private fun clickNodeCenter(node: AccessibilityNodeInfo): Boolean {
+        try {
             val rect = getRect(node)
             if (rect.isEmpty || rect.width() < 10 || rect.height() < 10) return false
-            return tapScreenPoint(rect.centerX().toFloat(), rect.centerY().toFloat())
+            val success = tapScreenPoint(rect.centerX().toFloat(), rect.centerY().toFloat())
+            if (success) Thread.sleep(800) // وقت إضافي لتستقر الواجهة بعد النقر
+            return success
         } catch (e: Exception) { return false }
     }
 
     @TargetApi(30)
     private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false) {
-        
-        // التحقق من فتح السلة فقط إذا لم تكن مفتوحة بالفعل (لتجنب الخروج منها في رابيت)
         if (!isCartAlreadyOpen) {
             val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة") ?: findNodeByText(rootInActiveWindow, "الكيس")
             if (cartNode != null) {
@@ -599,7 +606,6 @@ class DealScannerService : AccessibilityService() {
                     for (deal in deals) {
                         if (!deal.isAssigned) {
                             val cleanName = deal.originalName.replace("\n", " ").trim()
-                            // استخدام فلتر الكلمات بدلاً من الحروف المحددة لتفادي تشابه الأسماء الطويلة
                             val words = cleanName.split(" ").filter { it.length > 2 }.take(2)
                             val matchCount = words.count { screenText.contains(it, ignoreCase = true) }
                             
@@ -617,7 +623,6 @@ class DealScannerService : AccessibilityService() {
                     deals.filter { it.dealText in extras }.forEach { it.isAssigned = false }
                 }
 
-                // خطة بديلة: إذا فشل التطابق النصي لأي سبب، أرفق 5 منتجات غير مرسلة للصورة إجبارياً بدلاً من تخطيها
                 if (currentChunk.isEmpty() && deals.any { !it.isAssigned }) {
                     val unassigned = deals.filter { !it.isAssigned }.take(5)
                     unassigned.forEach { 
@@ -635,7 +640,7 @@ class DealScannerService : AccessibilityService() {
                 }
                 
                 if (i < shotsCount - 1) {
-                    swipeUp(0.80f, 0.20f, 1000L) // سكرول لأسفل السلة لرؤية المنتجات الأخرى
+                    swipeUp(0.80f, 0.20f, 1000L) 
                     Thread.sleep(2000)
                 }
             }
