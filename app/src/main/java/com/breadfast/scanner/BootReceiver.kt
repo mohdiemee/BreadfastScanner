@@ -13,7 +13,14 @@ class BootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_LOCKED_BOOT_COMPLETED,
             "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" -> {
-                AlarmScheduler.scheduleAll(context, prefs.getString("RUN_TIMES", "") ?: "")
+                
+                // جلب المواعيد المحفوظة لكلا التطبيقين
+                val bfTimes = prefs.getString("BREADFAST_RUN_TIMES", "") ?: ""
+                val rbTimes = prefs.getString("RABBIT_RUN_TIMES", "") ?: ""
+                
+                // جدولة كلا التطبيقين
+                AlarmScheduler.scheduleAllForApp(context, "BREADFAST", bfTimes)
+                AlarmScheduler.scheduleAllForApp(context, "RABBIT", rbTimes)
             }
         }
     }
