@@ -32,6 +32,7 @@ class DealScannerService : AccessibilityService() {
     private var isScanning = false
     private var lastScanTime = 0L
     private var addedItemsCount = 0
+    private val rabbitFailedAddProducts = mutableSetOf<String>()
 
     private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
 
@@ -218,22 +219,64 @@ class DealScannerService : AccessibilityService() {
         return null
     }
 
-    private fun findRabbitAddButton(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (node == null) return null
-        val text = node.text?.toString()?.trim() ?: ""
-        val desc = node.contentDescription?.toString()?.trim() ?: ""
-        val id = node.viewIdResourceName ?: ""
-        val combined = "$text $desc $id".lowercase(java.util.Locale.ROOT)
+    private fun findRabbitAddButton(productCard: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val cardRect = getRect(productCard)
+        if (cardRect.isEmpty || cardRect.width() < 100 || cardRect.height() < 150) {
+            return null
+        }
+
+        val expectedX = cardRect.left + (cardRect.width() * 0.80f)
+        val expectedY = cardRect.top + (cardRect.height() * 0.43f)
         
-        val isAddButton = (text == "+" || desc == "+" || combined.contains("add to cart") || combined.contains("add"))
-        if (isAddButton && node.isVisibleToUser && node.isEnabled) {
-            return node
+        var bestCandidate: AccessibilityNodeInfo? = null
+        var bestScore = Float.NEGATIVE_INFINITY
+
+        fun scanNode(node: AccessibilityNodeInfo?) {
+            if (node == null) return
+            val text = node.text?.toString()?.trim() ?: ""
+            val desc = node.contentDescription?.toString()?.trim() ?: ""
+            val id = node.viewIdResourceName ?: ""
+            val combined = "$text $desc $id".trim().lowercase(java.util.Locale.ROOT)
+            val rect = getRect(node)
+
+            val isInsideCard = !rect.isEmpty && rect.left >= cardRect.left - 5 && rect.right <= cardRect.right + 5 && 
+                               rect.top >= cardRect.top - 5 && rect.bottom <= cardRect.bottom + 5
+
+            if (isInsideCard && rect.width() >= 30 && rect.height() >= 30) {
+                val width = rect.width().toFloat()
+                val height = rect.height().toFloat()
+                val aspectRatio = width / height
+                val centerXRatio = (rect.centerX() - cardRect.left).toFloat() / cardRect.width().toFloat()
+                val centerYRatio = (rect.centerY() - cardRect.top).toFloat() / cardRect.height().toFloat()
+
+                val isTextAddButton = text == "+" || desc == "+" || combined == "add" || combined.contains("add to cart")
+                val isGeometryAddButton = node.isClickable && combined.isBlank() && width in 40f..250f && height in 40f..250f &&
+                                          aspectRatio in 0.65f..1.45f && centerXRatio in 0.58f..0.98f && centerYRatio in 0.18f..0.72f
+
+                if (isTextAddButton || isGeometryAddButton) {
+                    val distance = kotlin.math.abs(rect.centerX() - expectedX) + kotlin.math.abs(rect.centerY() - expectedY)
+                    val score = (if (isTextAddButton) 10000f else 0f) - distance
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestCandidate = node
+                    }
+                }
+            }
+            for (i in 0 until node.childCount) {
+                scanNode(node.getChild(i))
+            }
         }
+        scanNode(productCard)
+        return bestCandidate
+    }
+
+    private fun extractAllTextsFromCard(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
+        if (node == null) return
+        val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+        if (t.isNotEmpty()) texts.add(t)
         for (i in 0 until node.childCount) {
-            val result = findRabbitAddButton(node.getChild(i))
-            if (result != null) return result
+            extractAllTextsFromCard(node.getChild(i), texts)
         }
-        return null
     }
 
     // ==========================================
@@ -298,6 +341,7 @@ class DealScannerService : AccessibilityService() {
         addLog("✅ Rabbit: تم فتح صفحة العروض بنجاح.")
         Thread.sleep(1500)
 
+        rabbitFailedAddProducts.clear()
         val minDiscount = prefs.getInt("RABBIT_MIN_DISCOUNT", 30) 
         val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
         val cooldownMillis = cooldownHours * 60 * 60 * 1000L
@@ -395,15 +439,27 @@ class DealScannerService : AccessibilityService() {
             val lastSent = historyMap[productKey]
             if (lastSent != null && System.currentTimeMillis() - lastSent < cooldownMillis) continue
             
+            if (rabbitFailedAddProducts.contains(productKey)) continue
+
+            var plusClicked = false
             val addButton = findRabbitAddButton(productCard)
-            if (addButton == null) {
-                addLog("⚠️ Rabbit: لم أجد زر + للمنتج: ${productInfo.name}")
-                continue
+            if (addButton != null) {
+                plusClicked = clickNodeCenter(addButton)
             }
             
-            val plusClicked = clickNodeCenter(addButton)
             if (!plusClicked) {
-                addLog("⚠️ Rabbit: فشل الضغط على + للمنتج: ${productInfo.name}")
+                val rect = getRect(productCard)
+                val fallbackX = rect.left + (rect.width() * 0.80f)
+                val fallbackY = rect.top + (rect.height() * 0.43f)
+                plusClicked = tapScreenPoint(fallbackX, fallbackY)
+                if (plusClicked) {
+                    Thread.sleep(800)
+                }
+            }
+
+            if (!plusClicked) {
+                rabbitFailedAddProducts.add(productKey)
+                addLog("⚠️ Rabbit: لم أجد زر + داخل كارت المنتج: ${productInfo.name}")
                 continue
             }
             
@@ -809,14 +865,8 @@ class DealScannerService : AccessibilityService() {
             outputStream.writeBytes("\r\n--$boundary--\r\n")
             outputStream.flush()
             outputStream.close()
-            
-            if (connection.responseCode in 200..299) {
-                addLog("✅ تم رفع الصورة بنجاح.")
-            } else {
-                addLog("❌ فشل الرفع: ${connection.responseCode}")
-            }
             connection.disconnect()
-        } catch (e: Exception) { addLog("❌ خطأ رفع الصورة: ${e.message}") }
+        } catch (e: Exception) { }
     }
 
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
