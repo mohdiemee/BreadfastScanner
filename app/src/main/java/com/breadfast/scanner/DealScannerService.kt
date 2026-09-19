@@ -254,7 +254,7 @@ class DealScannerService : AccessibilityService() {
             }
             previousScreenContent = currentScreenContent
             totalScrolls++
-            swipeUp(0.75f, 0.35f, 500L) 
+            swipeUp(0.75f, 0.50f, 600L)
             Thread.sleep(1200) 
         }
 
