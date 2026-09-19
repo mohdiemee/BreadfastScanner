@@ -776,8 +776,10 @@ class DealScannerService : AccessibilityService() {
             unassignedDeals.removeAll(currentBatch)
 
             if (unassignedDeals.isNotEmpty()) {
-                swipeUp(0.80f, 0.20f, 1000L) 
-                Thread.sleep(2000)
+                // سحب من فوق زر الدفع (82%) إلى أسفل الشريط الأخضر (22%)
+                // زيادة الوقت إلى 2000 ملي ثانية (ثانيتين) لتحويل السحبة إلى (سحب بطيء) يمنع الانزلاق
+                swipeUp(0.82f, 0.22f, 2000L) 
+                Thread.sleep(2500)
             }
         }
     }
@@ -841,16 +843,26 @@ class DealScannerService : AccessibilityService() {
     }
 
     private fun sendTelegramPhotoMultipart(token: String, chatId: String, imageBytes: ByteArray, caption: String) {
+        var connection: HttpURLConnection? = null
         try {
+            if (token.isBlank() || chatId.isBlank()) {
+                addLog("❌ Telegram: التوكن أو Chat ID فارغ، راجع الإعدادات.")
+                return
+            }
+
             val boundary = "Boundary-${System.currentTimeMillis()}"
-            val connection = URL("https://api.telegram.org/bot$token/sendPhoto").openConnection() as HttpURLConnection
+            val url = URL("https://api.telegram.org/bot${token.trim()}/sendPhoto")
+            connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
-            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
             connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            
             val outputStream = DataOutputStream(connection.outputStream)
             
             outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n")
-            outputStream.write((chatId + "\r\n").toByteArray(Charsets.UTF_8))
+            outputStream.write((chatId.trim() + "\r\n").toByteArray(Charsets.UTF_8))
             outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n")
             outputStream.write((caption + "\r\n").toByteArray(Charsets.UTF_8))
             outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"reply_markup\"\r\n\r\n")
@@ -860,8 +872,24 @@ class DealScannerService : AccessibilityService() {
             outputStream.writeBytes("\r\n--$boundary--\r\n")
             outputStream.flush()
             outputStream.close()
-            connection.disconnect()
-        } catch (e: Exception) { }
+            
+            val responseCode = connection.responseCode
+            val responseText = try {
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.use { it.readText() } ?: ""
+            } catch (_: Exception) { "No response text" }
+            
+            if (responseCode in 200..299) {
+                addLog("✅ Telegram: تم رفع الصورة بنجاح.")
+            } else {
+                // سيظهر لك سبب الرفض من تليجرام هنا
+                addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
+            }
+        } catch (e: Exception) { 
+            addLog("❌ Telegram Exception: ${e.message}") 
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
