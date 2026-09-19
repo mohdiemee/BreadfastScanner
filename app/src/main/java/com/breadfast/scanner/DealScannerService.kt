@@ -291,43 +291,101 @@ class DealScannerService : AccessibilityService() {
         processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
         cooldownMillis: Long, prefs: SharedPreferences
     ) {
-        val discountRegex = Regex("^-([0-9]{1,2})%$")
         val uniqueNodes = nodesList.distinctBy { it.node }
 
         for (i in uniqueNodes.indices) {
             val current = uniqueNodes[i]
-            val match = discountRegex.find(current.text)
+            val text = current.text.trim()
             
-            if (match != null) {
-                val discountPercent = match.groupValues[1].toIntOrNull() ?: continue
-                if (discountPercent >= minDiscount) {
-                    val productName = if (i + 1 < uniqueNodes.size && uniqueNodes[i+1].text.length > 3) 
-                        uniqueNodes[i+1].text else "منتج رابيت مميز"
-
-                    if (processed.contains(productName)) continue
-                    val lastSent = historyMap[productName]
-                    if (lastSent != null && (System.currentTimeMillis() - lastSent) < cooldownMillis) continue
-
-                    var plusClicked = false
-                    for (j in i..minOf(i + 5, uniqueNodes.size - 1)) {
-                        val potentialPlus = uniqueNodes[j]
-                        if (potentialPlus.text == "+" || potentialPlus.node.contentDescription?.toString() == "Add") {
-                            plusClicked = clickNodeSafely(potentialPlus.node)
-                            if (plusClicked) break
+            // 1. اكتشاف باج الخصم بمرونة عالية (أي نص قصير يحتوي على % ورقم) لتجاوز مشاكل اتجاه اللغة والمسافات
+            if (text.contains("%")) {
+                val match = Regex("(\\d{1,2})").find(text)
+                if (match != null && text.length <= 8) {
+                    val discountPercent = match.value.toIntOrNull() ?: continue
+                    
+                    if (discountPercent >= minDiscount) {
+                        
+                        // 2. البحث عن اسم المنتج (أول نص طويل بعد الخصم ولا يحتوي على مجرد أرقام/نسب)
+                        var productName = "منتج رابيت مميز"
+                        for (k in i + 1..minOf(i + 4, uniqueNodes.size - 1)) {
+                            val candidate = uniqueNodes[k].text.trim()
+                            if (candidate.length > 4 && !candidate.contains("%")) {
+                                productName = candidate
+                                break
+                            }
                         }
-                    }
 
-                    if (plusClicked) {
-                        val cleanName = productName.replace("\n", " ").trim()
-                        val dealText = "$cleanName بخصم $discountPercent%"
-                        deals.add(DealData(originalName = cleanName, dealText = dealText))
-                        processed.add(productName)
-                        historyMap[productName] = System.currentTimeMillis()
-                        saveHistoryMap(prefs, historyMap)
+                        // التحقق من سجل الإرسال لمنع التكرار
+                        if (processed.contains(productName)) continue
+                        val lastSent = historyMap[productName]
+                        if (lastSent != null && (System.currentTimeMillis() - lastSent) < cooldownMillis) continue
+
+                        // 3. النقر على الزر (+) الأصفر
+                        var plusClicked = false
+                        
+                        // المحاولة الأولى: البحث المباشر عن الزر + نصياً في العقد القريبة
+                        for (j in i..minOf(i + 8, uniqueNodes.size - 1)) {
+                            val pNode = uniqueNodes[j].node
+                            val pText = pNode.text?.toString()?.trim() ?: ""
+                            val pDesc = pNode.contentDescription?.toString()?.trim() ?: ""
+                            
+                            if (pText == "+" || pDesc == "+" || pText.equals("Add", true) || pDesc.equals("Add", true)) {
+                                plusClicked = clickNodeSafely(pNode)
+                                if (plusClicked) break
+                            }
+                        }
+                        
+                        // المحاولة الثانية: استهداف كارت المنتج ككل والبحث داخله عن زر قابل للنقر
+                        if (!plusClicked) {
+                            val productCard = findRabbitProductCard(current.node)
+                            if (productCard != null) {
+                                plusClicked = forceClickAddButton(productCard)
+                            }
+                        }
+
+                        // المحاولة الثالثة: البحث عن الزر الدائري الأصفر برمجياً (عن طريق الأبعاد)
+                        if (!plusClicked) {
+                            for (j in i + 1..minOf(i + 8, uniqueNodes.size - 1)) {
+                                val pNode = uniqueNodes[j].node
+                                val rect = Rect()
+                                pNode.getBoundsInScreen(rect)
+                                val combined = ("${pNode.text} ${pNode.contentDescription}").trim()
+                                // أزرار رابيت مربعة/دائرية وصغيرة
+                                if (pNode.isClickable && combined.isBlank() && rect.width() in 40..200 && rect.height() in 40..200) {
+                                    plusClicked = clickNodeSafely(pNode)
+                                    if (plusClicked) break
+                                }
+                            }
+                        }
+
+                        if (plusClicked) {
+                            val cleanName = productName.replace("\n", " ").trim()
+                            val dealText = "$cleanName بخصم $discountPercent%"
+                            deals.add(DealData(originalName = cleanName, dealText = dealText))
+                            processed.add(productName)
+                            historyMap[productName] = System.currentTimeMillis()
+                            saveHistoryMap(prefs, historyMap)
+                        }
                     }
                 }
             }
         }
+    }
+
+    private fun findRabbitProductCard(badgeNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = badgeNode.parent
+        val screenWidth = resources.displayMetrics.widthPixels
+        for (level in 0..6) {
+            val node = current ?: break
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            // كروت رابيت تأخذ نصف الشاشة تقريباً (بين 25% و 60% من عرض الشاشة)
+            if (rect.width() > screenWidth * 0.25 && rect.width() < screenWidth * 0.60 && rect.height() > 200) {
+                return node
+            }
+            current = node.parent
+        }
+        return badgeNode.parent
     }
 
     // ==========================================
