@@ -8,7 +8,7 @@ import android.os.Build
 import java.util.Calendar
 
 object AlarmScheduler {
-    fun scheduleAll(context: Context, times: String) {
+    fun scheduleAllForApp(context: Context, appType: String, times: String) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
@@ -35,28 +35,42 @@ object AlarmScheduler {
             }
             
             val intent = Intent(context, AlarmReceiver::class.java).apply {
-                action = "com.breadfast.scanner.ALARM_$index"
+                // جعل الـ Action مميزاً لكل تطبيق لتجنب التداخل
+                action = "com.breadfast.scanner.ALARM_${appType}_$index"
+                putExtra("APP_TYPE", appType)
             }
             
+            // استخدام Request Code مختلف لتطبيق رابيت (بإضافة 1000) لمنع استبدال منبهات بريدفاست
+            val requestCode = if (appType == "RABBIT") 1000 + index else index
+            
             val pendingIntent = PendingIntent.getBroadcast(
-                context, index, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
             
             alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.timeInMillis, pendingIntent)
             
             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
-            addLog(context, "🗓️ تم ضبط الموعد $timeText لـ ${sdf.format(calendar.time)}")
+            addLog(context, "🗓️ تم ضبط موعد [$appType] الساعة $timeText لـ ${sdf.format(calendar.time)}")
         }
     }
 
     fun cancelAll(context: Context, maxAlarms: Int = 20) {
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        repeat(maxAlarms) { index ->
-            val intent = Intent(context, AlarmReceiver::class.java).apply { action = "com.breadfast.scanner.ALARM_$index" }
-            val pendingIntent = PendingIntent.getBroadcast(context, index, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
-            if (pendingIntent != null) {
-                alarmManager.cancel(pendingIntent)
-                pendingIntent.cancel()
+        val appTypes = listOf("BREADFAST", "RABBIT")
+        
+        for (appType in appTypes) {
+            repeat(maxAlarms) { index ->
+                val requestCode = if (appType == "RABBIT") 1000 + index else index
+                val intent = Intent(context, AlarmReceiver::class.java).apply { 
+                    action = "com.breadfast.scanner.ALARM_${appType}_$index" 
+                }
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context, requestCode, intent, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+                )
+                if (pendingIntent != null) {
+                    alarmManager.cancel(pendingIntent)
+                    pendingIntent.cancel()
+                }
             }
         }
     }
