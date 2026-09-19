@@ -51,11 +51,11 @@ class DealScannerService : AccessibilityService() {
         // تحديد التطبيق الحالي المطلوب فحصه
         val currentTask = prefs.getString("CURRENT_TASK", "BREADFAST") ?: "BREADFAST"
         
-        // جلب اسم الحزمة المناسبة للتطبيق (يمكنك تخصيص هذه الحزم لاحقاً من الإعدادات)
+        // جلب اسم الحزمة المناسبة للتطبيق مع توحيد القيمة الافتراضية لرابيت
         val targetApp = if (currentTask == "RABBIT") 
-            prefs.getString("RABBIT_PACKAGE", "com.rabbit.application") ?: ""
+            prefs.getString("RABBIT_PACKAGE", "com.rabbit.grocery") ?: "com.rabbit.grocery"
         else 
-            prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: ""
+            prefs.getString("TARGET_PACKAGE", "com.breadfast.application") ?: "com.breadfast.application"
 
         if (event.packageName?.toString() == targetApp) {
             val currentTime = System.currentTimeMillis()
@@ -95,7 +95,7 @@ class DealScannerService : AccessibilityService() {
                         prefs.edit().remove("PENDING_TASK").apply() // مسح من الطابور
                         addLog("⏳ الفحص اكتمل. جاري تشغيل فحص [$pendingTask] المنتظر بعد 20 ثانية...")
                         
-                        Thread.sleep(20000) // الانتظار 20 ثانية كما طلبت
+                        Thread.sleep(20000) 
                         
                         val retryIntent = Intent(this@DealScannerService, AlarmReceiver::class.java).apply {
                             putExtra("APP_TYPE", pendingTask)
@@ -108,13 +108,62 @@ class DealScannerService : AccessibilityService() {
     }
 
     // ==========================================
+    // دوال مساعدة خاصة بتنقل رابيت (Rabbit Navigation Helpers)
+    // ==========================================
+    private enum class RabbitBottomTab { CART, PROMOTIONS }
+
+    private fun tapRabbitBottomTab(tab: RabbitBottomTab): Boolean {
+        val metrics = resources.displayMetrics
+        val isRtl = resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
+        val x = when (tab) {
+            RabbitBottomTab.CART -> metrics.widthPixels * 0.50f
+            RabbitBottomTab.PROMOTIONS -> {
+                if (isRtl) {
+                    metrics.widthPixels * 0.30f
+                } else {
+                    metrics.widthPixels * 0.70f
+                }
+            }
+        }
+        // مركز شريط Rabbit السفلي
+        val y = metrics.heightPixels * 0.955f
+        addLog("🎯 Rabbit Nav: tab=$tab, x=${x.toInt()}, y=${y.toInt()}")
+        return tapScreenPoint(x, y)
+    }
+
+    private fun waitForAnyText(vararg texts: String, timeoutMs: Long = 6000L): Boolean {
+        val start = System.currentTimeMillis()
+        while (System.currentTimeMillis() - start < timeoutMs) {
+            val root = rootInActiveWindow
+            if (root != null && texts.any { text -> findNodeByText(root, text) != null }) {
+                return true
+            }
+            Thread.sleep(250)
+        }
+        return false
+    }
+
+    private fun findExactTextNode(node: AccessibilityNodeInfo?, target: String): AccessibilityNodeInfo? {
+        if (node == null) return null
+        val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+        if (text.equals(target, ignoreCase = true)) {
+            return node
+        }
+        for (i in 0 until node.childCount) {
+            val result = findExactTextNode(node.getChild(i), target)
+            if (result != null) return result
+        }
+        return null
+    }
+
+    // ==========================================
     // منطق تطبيق رابيت (Rabbit Automation)
     // ==========================================
     private fun runRabbitAutomation(prefs: SharedPreferences) {
         addLog("⏳ تم فتح رابيت.. ننتظر 12 ثانية للتحميل...")
         Thread.sleep(12000)
 
-        // 1. الدخول إلى Supermarket+ (تم إضافة findClickableParent لضمان النقر على الكارت وليس النص فقط)
+        // 1. الدخول إلى Supermarket+
         val supermarketNode = findNodeByText(rootInActiveWindow, "Supermarket+") ?: findNodeByText(rootInActiveWindow, "+سوبرماركت")
         if (supermarketNode != null) {
             addLog("🛒 تم العثور على سوبر ماركت+، جاري الدخول...")
@@ -123,15 +172,18 @@ class DealScannerService : AccessibilityService() {
             Thread.sleep(6000)
         }
 
-        // إحداثيات الشريط السفلي (تم رفعها لـ 0.90 لتجنب شريط أزرار النظام السفلي)
-        val metrics = resources.displayMetrics
-        val cartX = metrics.widthPixels / 2f
-        val bottomY = metrics.heightPixels * 0.90f
-
-        // 2. النقر على السلة لتفريغها (بالإحداثيات فقط لتجنب أي أخطاء نصية)
-        addLog("🗑️ جاري فتح السلة لمسح المنتجات القديمة...")
-        tapScreenPoint(cartX, bottomY)
-        Thread.sleep(4000)
+        // 2. النقر على السلة لتفريغها
+        addLog("🗑️ Rabbit: جاري فتح السلة لمسح المنتجات القديمة...")
+        if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
+            addLog("❌ Rabbit: فشل إرسال نقرة السلة.")
+            return
+        }
+        
+        val cartOpened = waitForAnyText("Deserted cart?", "إيه الصحراء دي؟", "Clear all", "فضي الكيس", "My Cart", "الكيس", timeoutMs = 6000L)
+        if (!cartOpened) {
+            addLog("❌ Rabbit: لم يتم فتح صفحة السلة؛ إيقاف العملية لتجنب الضغط في صفحة خاطئة.")
+            return
+        }
 
         val emptyCart = findNodeByText(rootInActiveWindow, "Deserted cart?") ?: findNodeByText(rootInActiveWindow, "إيه الصحراء دي؟")
         if (emptyCart != null) {
@@ -143,10 +195,11 @@ class DealScannerService : AccessibilityService() {
             if (clearBtn != null) {
                 clickNodeSafely(clearBtn)
                 Thread.sleep(1500)
-                val confirmBtn = findNodeByText(rootInActiveWindow, "Clear") ?: findNodeByText(rootInActiveWindow, "تمام")
+                // استخدام التطابق الدقيق لزر التأكيد لمنع النقر على الكلمة الموجودة بالخلفية
+                val confirmBtn = findExactTextNode(rootInActiveWindow, "Clear") ?: findExactTextNode(rootInActiveWindow, "تمام")
                 if (confirmBtn != null) {
                     clickNodeSafely(confirmBtn)
-                    addLog("✅ تم تفريغ سلة رابيت بنجاح.")
+                    addLog("✅ تم تفريغ سلة Rabbit بنجاح.")
                 }
                 Thread.sleep(3000)
             }
@@ -154,14 +207,22 @@ class DealScannerService : AccessibilityService() {
             Thread.sleep(3000)
         }
 
-        // 3. النقر على قسم العروض (تم إلغاء البحث بالنص لتجنب كارت الأكل، الاعتماد حصرياً على الإحداثيات)
-        addLog("🎯 جاري الدخول لصفحة العروض...")
-        val isRtl = resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
-        val offersX = if (isRtl) metrics.widthPixels * 0.25f else metrics.widthPixels * 0.75f
-        tapScreenPoint(offersX, bottomY)
-        Thread.sleep(6000)
+        // 3. النقر على قسم العروض
+        addLog("🎯 Rabbit: جاري فتح صفحة العروض...")
+        if (!tapRabbitBottomTab(RabbitBottomTab.PROMOTIONS)) {
+            addLog("❌ Rabbit: فشل إرسال نقرة صفحة العروض.")
+            return
+        }
+        
+        val promotionsOpened = waitForAnyText("Promotions", "عروض", "Promo Codes", "أكواد الخصم", timeoutMs = 7000L)
+        if (!promotionsOpened) {
+            addLog("❌ Rabbit: لم يتم الوصول إلى Promotions؛ تم إيقاف الفحص لمنع المسار الخاطئ.")
+            return
+        }
+        addLog("✅ Rabbit: تم فتح صفحة العروض بنجاح.")
+        Thread.sleep(1500)
 
-        // إعدادات المسح (الحد الأدنى للخصم وسجل المنتجات)
+        // إعدادات المسح
         val minDiscount = prefs.getInt("RABBIT_MIN_DISCOUNT", 30) 
         val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
         val cooldownMillis = cooldownHours * 60 * 60 * 1000L
@@ -172,6 +233,7 @@ class DealScannerService : AccessibilityService() {
         var previousScreenContent = ""
         var emptyScrolls = 0
         var totalScrolls = 0
+        val metrics = resources.displayMetrics
         val safeTop = metrics.heightPixels * 0.15f
         val safeBottom = metrics.heightPixels * 0.82f // تجنب الشريط السفلي
         
@@ -201,9 +263,19 @@ class DealScannerService : AccessibilityService() {
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
-            addLog("🔥 تم الانتهاء من رابيت وإضافة ${foundDeals.size} منتجات. جاري تصوير السلة...")
-            tapScreenPoint(cartX, bottomY) // النقر على السلة
-            Thread.sleep(5000)
+            addLog("🛒 Rabbit: جاري فتح السلة النهائية لإرسال التقرير...")
+            if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
+                addLog("❌ Rabbit: لم يمكن فتح السلة النهائية لإرسال التقرير.")
+                return
+            }
+            
+            val finalCartOpened = waitForAnyText("My Cart", "الكيس", "Clear all", "فضي الكيس", "Deserted cart?", "إيه الصحراء دي؟", timeoutMs = 6000L)
+            if (!finalCartOpened) {
+                addLog("❌ Rabbit: لم تتأكد صفحة السلة النهائية؛ لن يتم تصوير صفحة خاطئة.")
+                return
+            }
+            Thread.sleep(4000)
+
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals)
             } else {
@@ -214,13 +286,11 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-
     private fun analyzeRabbitDeals(
         nodesList: List<NodeData>, minDiscount: Int, deals: MutableList<DealData>, 
         processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
         cooldownMillis: Long, prefs: SharedPreferences
     ) {
-        // رابيت يوفر نسبة الخصم جاهزة في مربع أحمر، مثلاً: "-30%"
         val discountRegex = Regex("^-([0-9]{1,2})%$")
         val uniqueNodes = nodesList.distinctBy { it.node }
 
@@ -231,7 +301,6 @@ class DealScannerService : AccessibilityService() {
             if (match != null) {
                 val discountPercent = match.groupValues[1].toIntOrNull() ?: continue
                 if (discountPercent >= minDiscount) {
-                    // البحث عن اسم المنتج (غالباً يكون بعد الخصم بعقدة أو عقدتين)
                     val productName = if (i + 1 < uniqueNodes.size && uniqueNodes[i+1].text.length > 3) 
                         uniqueNodes[i+1].text else "منتج رابيت مميز"
 
@@ -239,8 +308,6 @@ class DealScannerService : AccessibilityService() {
                     val lastSent = historyMap[productName]
                     if (lastSent != null && (System.currentTimeMillis() - lastSent) < cooldownMillis) continue
 
-                    // البحث عن الدائرة الصفراء (+) في نفس نطاق كارت المنتج (أو أسفله مباشرة)
-                    // في رابيت، الـ Text أو ContentDescription للزر غالباً "+" أو "Add"
                     var plusClicked = false
                     for (j in i..minOf(i + 5, uniqueNodes.size - 1)) {
                         val potentialPlus = uniqueNodes[j]
@@ -355,7 +422,6 @@ class DealScannerService : AccessibilityService() {
     private fun loadHistoryMap(prefs: SharedPreferences): MutableMap<String, Long> {
         val historyStr = prefs.getString("PRODUCTS_HISTORY", "") ?: ""
         val historyMap = mutableMapOf<String, Long>()
-        val currentTime = System.currentTimeMillis()
         if (historyStr.isNotEmpty()) {
             historyStr.split("||").forEach { entry ->
                 val parts = entry.split("::")
