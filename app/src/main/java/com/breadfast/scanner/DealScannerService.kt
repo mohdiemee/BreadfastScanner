@@ -23,10 +23,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-// === الكلاس لربط اسم المنتج الأصلي مع النص التسويقي وحالة الإرسال ===
 data class DealData(val originalName: String, val dealText: String, var isAssigned: Boolean = false)
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
-
 private data class RabbitProductInfo(val name: String, val unit: String?, val salePrice: String?)
 
 class DealScannerService : AccessibilityService() {
@@ -236,15 +234,6 @@ class DealScannerService : AccessibilityService() {
             if (result != null) return result
         }
         return null
-    }
-
-    private fun extractAllTextsFromCard(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
-        if (node == null) return
-        val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
-        if (t.isNotEmpty()) texts.add(t)
-        for (i in 0 until node.childCount) {
-            extractAllTextsFromCard(node.getChild(i), texts)
-        }
     }
 
     // ==========================================
@@ -861,6 +850,10 @@ class DealScannerService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    private fun normalizedText(node: AccessibilityNodeInfo): String {
+        return (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+    }
+
     private fun getRect(node: AccessibilityNodeInfo): Rect = Rect().also { node.getBoundsInScreen(it) }
 
     private fun findClickableParent(startNode: AccessibilityNodeInfo, maxLevels: Int = 5): AccessibilityNodeInfo? {
@@ -919,5 +912,11 @@ class DealScannerService : AccessibilityService() {
         latch.await(2, TimeUnit.SECONDS)
         Thread.sleep(500)
         return completed
+    }
+
+    private fun isCartEmpty(): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val emptyText = findNodeByText(root, "السلة فارغة") ?: findNodeByText(root, "فارغة")
+        return emptyText != null || (findNodeByText(root, "مسح الكل") == null && findNodeByText(root, "Clear All") == null)
     }
 }
