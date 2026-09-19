@@ -32,7 +32,7 @@ class DealScannerService : AccessibilityService() {
     private var isScanning = false
     private var lastScanTime = 0L
     private var addedItemsCount = 0
-    private val rabbitFailedAddProducts = mutableSetOf<String>()
+    private val rabbitAddAttempts = mutableMapOf<String, Int>()
 
     private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
 
@@ -341,7 +341,7 @@ class DealScannerService : AccessibilityService() {
         addLog("✅ Rabbit: تم فتح صفحة العروض بنجاح.")
         Thread.sleep(1500)
 
-        rabbitFailedAddProducts.clear()
+        rabbitAddAttempts.clear() // تصفير العداد في بداية الفحص
         val minDiscount = prefs.getInt("RABBIT_MIN_DISCOUNT", 30) 
         val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
         val cooldownMillis = cooldownHours * 60 * 60 * 1000L
@@ -356,24 +356,36 @@ class DealScannerService : AccessibilityService() {
         val safeTop = metrics.heightPixels * 0.15f
         val safeBottom = metrics.heightPixels * 0.82f 
         
+        var noAddPasses = 0
         while (totalScrolls < 500) {
             val visibleNodes = mutableListOf<NodeData>()
             extractNodes(rootInActiveWindow, visibleNodes, safeTop, safeBottom)
             val currentScreenContent = visibleNodes.map { it.text }.distinct().sorted().joinToString("|")
             
-            analyzeRabbitDeals(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
+            val productAdded = analyzeRabbitDeals(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
             
-            Thread.sleep(900)
+            // إذا تمت إضافة منتج، نتجاهل الاسكرول ونعيد الحلقة لقراءة الشاشة الحديثة فوراً
+            if (productAdded) {
+                noAddPasses = 0
+                addLog("🔄 Rabbit: تمت الإضافة، إعادة قراءة الشاشة للمنتج التالي...")
+                Thread.sleep(1200)
+                continue
+            }
+            
+            Thread.sleep(700)
             if (currentScreenContent == previousScreenContent) {
                 emptyScrolls++
-                if (emptyScrolls >= 3) break 
+                if (emptyScrolls >= 3) {
+                    addLog("🏁 Rabbit: انتهى محتوى العروض أو لا يوجد عناصر جديدة.")
+                    break 
+                }
             } else {
                 emptyScrolls = 0
             }
             previousScreenContent = currentScreenContent
             totalScrolls++
-            swipeUp(0.75f, 0.50f, 800L) 
-            Thread.sleep(1200) 
+            swipeUp(0.75f, 0.60f, 1000L) // سحبة أبطأ وأقصر
+            Thread.sleep(1300) 
         }
 
         val token = prefs.getString("BOT_TOKEN", "") ?: ""
@@ -407,7 +419,7 @@ class DealScannerService : AccessibilityService() {
         nodesList: List<NodeData>, minDiscount: Int, deals: MutableList<DealData>, 
         processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
         cooldownMillis: Long, prefs: SharedPreferences
-    ) {
+    ): Boolean {
         val discountRegex = Regex("""^-\s*(\d{1,2})%$""")
         val processedCards = mutableSetOf<String>()
         
@@ -418,20 +430,14 @@ class DealScannerService : AccessibilityService() {
             if (discountPercent < minDiscount) continue
             
             val productCard = findRabbitProductCard(current.node)
-            if (productCard == null) {
-                addLog("⚠️ Rabbit: لم يتم العثور على كارت للخصم $badgeText")
-                continue
-            }
+            if (productCard == null) continue
             
             val cardRect = getRect(productCard)
             val cardKey = "${cardRect.left}:${cardRect.top}:${cardRect.right}:${cardRect.bottom}"
             if (!processedCards.add(cardKey)) continue
             
             val productInfo = extractRabbitProductInfo(productCard)
-            if (productInfo == null || productInfo.name.length < 3) {
-                addLog("⚠️ Rabbit: تم تجاهل كارت لأن اسم المنتج غير واضح.")
-                continue
-            }
+            if (productInfo == null || productInfo.name.length < 3) continue
             
             val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
             if (processed.contains(productKey)) continue
@@ -439,7 +445,9 @@ class DealScannerService : AccessibilityService() {
             val lastSent = historyMap[productKey]
             if (lastSent != null && System.currentTimeMillis() - lastSent < cooldownMillis) continue
             
-            if (rabbitFailedAddProducts.contains(productKey)) continue
+            // التحقق من عدد المحاولات السابقة (بحد أقصى 3 محاولات للمنتج الواحد)
+            val attempts = rabbitAddAttempts[productKey] ?: 0
+            if (attempts >= 3) continue
 
             var plusClicked = false
             val addButton = findRabbitAddButton(productCard)
@@ -452,16 +460,17 @@ class DealScannerService : AccessibilityService() {
                 val fallbackX = rect.left + (rect.width() * 0.80f)
                 val fallbackY = rect.top + (rect.height() * 0.43f)
                 plusClicked = tapScreenPoint(fallbackX, fallbackY)
-                if (plusClicked) {
-                    Thread.sleep(800)
-                }
+                if (plusClicked) Thread.sleep(800)
             }
 
             if (!plusClicked) {
-                rabbitFailedAddProducts.add(productKey)
-                addLog("⚠️ Rabbit: لم أجد زر + داخل كارت المنتج: ${productInfo.name}")
+                rabbitAddAttempts[productKey] = attempts + 1
+                addLog("⚠️ Rabbit: فشل الضغط للمنتج: ${productInfo.name} (محاولة ${attempts + 1}/3)")
                 continue
             }
+            
+            // نجاح الضغط: مسح المحاولات، حفظ المنتج، والرجوع فوراً لتحديث الشاشة
+            rabbitAddAttempts.remove(productKey)
             
             val displayName = buildString {
                 append(productInfo.name)
@@ -489,7 +498,11 @@ class DealScannerService : AccessibilityService() {
             historyMap[productKey] = System.currentTimeMillis()
             saveHistoryMap(prefs, historyMap)
             addLog("✅ Rabbit: تمت إضافة عرض: $dealText")
+            
+            // إرجاع true لإخبار الحلقة الرئيسية بأن واجهة التطبيق قد تغيرت ويجب إعادة القراءة
+            return true 
         }
+        return false
     }
 
     // ==========================================
@@ -831,17 +844,45 @@ class DealScannerService : AccessibilityService() {
         val latch = CountDownLatch(1)
         val executor = Executors.newSingleThreadExecutor()
         try {
-            takeScreenshot(Display.DEFAULT_DISPLAY, executor, object : AccessibilityService.TakeScreenshotCallback {
-                override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
-                    val hwBuffer = screenshot.hardwareBuffer
-                    bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, screenshot.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
-                    hwBuffer.close()
-                    latch.countDown()
+            val dispatched = takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                executor,
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                        try {
+                            val hardwareBuffer = screenshot.hardwareBuffer
+                            bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshot.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
+                            hardwareBuffer.close()
+                            if (bitmap == null) {
+                                addLog("❌ Screenshot: تم الاستلام لكن فشل تحويل الصورة إلى Bitmap.")
+                            } else {
+                                addLog("✅ Screenshot: تم الالتقاط ${bitmap!!.width}x${bitmap!!.height}")
+                            }
+                        } catch (e: Exception) {
+                            addLog("❌ Screenshot conversion error: ${e.message}")
+                        } finally {
+                            latch.countDown()
+                        }
+                    }
+                    override fun onFailure(errorCode: Int) {
+                        addLog("❌ Screenshot failed. Error code: $errorCode")
+                        latch.countDown()
+                    }
                 }
-                override fun onFailure(errorCode: Int) { latch.countDown() }
-            })
-            latch.await(5, TimeUnit.SECONDS)
-        } catch (e: Exception) { } finally { executor.shutdown() }
+            )
+            if (!dispatched) {
+                addLog("❌ Screenshot: النظام رفض بدء طلب الالتقاط.")
+                return null
+            }
+            val completed = latch.await(7, TimeUnit.SECONDS)
+            if (!completed) {
+                addLog("❌ Screenshot: انتهت المهلة بدون استجابة.")
+            }
+        } catch (e: Exception) {
+            addLog("❌ Screenshot exception: ${e.message}")
+        } finally {
+            executor.shutdown()
+        }
         return bitmap
     }
 
@@ -870,12 +911,43 @@ class DealScannerService : AccessibilityService() {
     }
 
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
+        var connection: HttpURLConnection? = null
         try {
-            val url = URL("https://api.telegram.org/bot$token/sendMessage?chat_id=$chatId&text=${URLEncoder.encode(text, "UTF-8")}&reply_markup=${URLEncoder.encode(replyMarkup, "UTF-8")}")
-            val connection = url.openConnection() as HttpURLConnection
-            connection.inputStream.reader().readText()
-            connection.disconnect()
-        } catch (e: Exception) {}
+            val url = URL("https://api.telegram.org/bot$token/sendMessage")
+            connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            
+            val body = buildString {
+                append("chat_id=").append(URLEncoder.encode(chatId, "UTF-8"))
+                append("&text=").append(URLEncoder.encode(text, "UTF-8"))
+                append("&reply_markup=").append(URLEncoder.encode(replyMarkup, "UTF-8"))
+            }
+            
+            connection.outputStream.use { output ->
+                output.write(body.toByteArray(Charsets.UTF_8))
+                output.flush()
+            }
+            
+            val responseCode = connection.responseCode
+            val responseText = try {
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.use { it.readText() } ?: ""
+            } catch (_: Exception) { "" }
+            
+            if (responseCode in 200..299) {
+                addLog("✅ Telegram: تم إرسال التقرير النصي بنجاح.")
+            } else {
+                addLog("❌ Telegram text failed: HTTP $responseCode - ${responseText.take(250)}")
+            }
+        } catch (e: Exception) {
+            addLog("❌ Telegram text exception: ${e.message}")
+        } finally {
+            connection?.disconnect()
+        }
     }
 
     private fun swipeUp(startFactor: Float, endFactor: Float, durationMs: Long) {
