@@ -207,6 +207,16 @@ class MainActivity : Activity() {
         setContentView(scrollView)
     }
 
+    // الدالة التي كانت مفقودة وتسببت في الخطأ
+    private fun createLabel(text: String): TextView {
+        return TextView(this).apply {
+            this.text = text
+            textSize = 14f
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 20, 0, 5)
+        }
+    }
+
     private fun requestExactAlarmPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
