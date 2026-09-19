@@ -7,12 +7,10 @@
     <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
-    <!-- الصلاحية الجديدة لرؤية التطبيقات المثبتة وفتحها -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    
-    <!-- الصلاحيات المضافة لضمان العمل في الخلفية وتخطي قفل الشاشة -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:allowBackup="true"
@@ -29,6 +27,14 @@
             </intent-filter>
         </activity>
 
+        <!-- الشاشة الوهمية المسؤولة عن إضاءة الهاتف وإزالة القفل -->
+        <activity
+            android:name=".WakeAndLaunchActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".DealScannerService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
@@ -42,5 +48,17 @@
         </service>
 
         <receiver android:name=".AlarmReceiver" android:exported="true" />
+
+        <!-- لضمان عودة المنبهات للعمل إذا قمت بإعادة تشغيل الهاتف -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
