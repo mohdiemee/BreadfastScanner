@@ -104,6 +104,31 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
+
+    private fun isRabbitInArabic(): Boolean {
+        val root = rootInActiveWindow ?: return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
+        
+        // فحص فعلي للنصوص الموجودة على الشاشة لتحديد لغة التطبيق الداخلية
+        val isArabic = findNodeByText(root, "سوبرماركت") != null || 
+                       findNodeByText(root, "الكيس") != null || 
+                       findNodeByText(root, "عروض") != null || 
+                       findNodeByText(root, "إيه الصحراء") != null ||
+                       findNodeByText(root, "فضي الكيس") != null
+
+        if (isArabic) return true
+        
+        val isEnglish = findNodeByText(root, "Supermarket") != null || 
+                        findNodeByText(root, "Cart") != null || 
+                        findNodeByText(root, "Promotions") != null ||
+                        findNodeByText(root, "Deserted cart") != null ||
+                        findNodeByText(root, "Clear all") != null
+
+        if (isEnglish) return false
+
+        // الخطة البديلة: الاعتماد على لغة النظام إذا كانت الشاشة خالية من النصوص السابقة
+        return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
+    }
+    
     // ==========================================
     // دوال مساعدة خاصة بتنقل واستخراج بيانات رابيت
     // ==========================================
@@ -111,7 +136,10 @@ class DealScannerService : AccessibilityService() {
 
     private fun tapRabbitBottomTab(tab: RabbitBottomTab): Boolean {
         val metrics = resources.displayMetrics
-        val isRtl = resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
+        
+        // استخدام الدالة الذكية لمعرفة لغة واجهة التطبيق فعلياً بدلاً من لغة الهاتف
+        val isRtl = isRabbitInArabic() 
+        
         val x = when (tab) {
             RabbitBottomTab.CART -> metrics.widthPixels * 0.50f
             RabbitBottomTab.PROMOTIONS -> {
@@ -119,7 +147,8 @@ class DealScannerService : AccessibilityService() {
             }
         }
         val y = metrics.heightPixels * 0.955f
-        addLog("🎯 Rabbit Bottom Nav: tab=$tab, x=${x.toInt()}, y=${y.toInt()}")
+        
+        addLog("🎯 Rabbit Nav: tab=$tab, isArabic=$isRtl, x=${x.toInt()}, y=${y.toInt()}")
         return tapScreenPoint(x, y)
     }
 
