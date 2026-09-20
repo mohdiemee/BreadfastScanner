@@ -135,6 +135,334 @@ class DealScannerService : AccessibilityService() {
         .trim()
 }
 
+
+    private fun parseRabbitCartProducts(
+    nodes: List<NodeData>,
+    deals: List<DealData>
+): List<CartProduct> {
+    if (nodes.isEmpty()) {
+        addLog(
+            "⚠️ Cart parser: لا توجد Accessibility nodes."
+        )
+        return emptyList()
+    }
+
+    val results = mutableListOf<CartProduct>()
+
+    val orderedNodes = nodes
+        .mapNotNull { item ->
+            val text =
+                normalizeRabbitText(item.text)
+
+            val rect =
+                getRect(item.node)
+
+            if (
+                text.isBlank() ||
+                    rect.isEmpty
+            ) {
+                null
+            } else {
+                NodeData(text, item.node)
+            }
+        }
+        .sortedBy {
+            getRect(it.node).top
+        }
+
+    val normalizedDeals = deals.map { deal ->
+        deal to normalizeProductKey(
+            deal.originalName
+        )
+    }
+
+    val usedDeals = mutableSetOf<String>()
+
+    for (index in orderedNodes.indices) {
+        val current = orderedNodes[index]
+
+        val currentText =
+            normalizeProductKey(current.text)
+
+        if (currentText.length < 3) continue
+        if (isNumericToken(current.text)) continue
+        if (isUnitText(current.text)) continue
+
+        if (
+            current.text == "+" ||
+                current.text == "-"
+        ) {
+            continue
+        }
+
+        val matchedDeal = normalizedDeals
+            .filter { (_, normalizedName) ->
+                !usedDeals.contains(normalizedName)
+            }
+            .map { pair ->
+                val deal = pair.first
+                val normalizedName = pair.second
+
+                val words = normalizedName
+                    .split(Regex("\\s+"))
+                    .filter { it.length >= 3 }
+
+                val score = words.count { word ->
+                    currentText.contains(word)
+                }
+
+                Triple(
+                    deal,
+                    normalizedName,
+                    score
+                )
+            }
+            .maxByOrNull {
+                it.third
+            }
+
+        if (
+            matchedDeal == null ||
+                matchedDeal.third <= 0
+        ) {
+            continue
+        }
+
+        val deal = matchedDeal.first
+        val dealKey = matchedDeal.second
+
+        val productRect =
+            getRect(current.node)
+
+        val productTop =
+            productRect.top
+
+        val nextProductTop =
+            normalizedDeals
+                .filter { (_, name) ->
+                    name != dealKey &&
+                        !usedDeals.contains(name)
+                }
+                .mapNotNull { (_, name) ->
+                    val firstWord = name
+                        .split(Regex("\\s+"))
+                        .firstOrNull {
+                            it.length >= 3
+                        }
+                        ?: return@mapNotNull null
+
+                    orderedNodes
+                        .filter { node ->
+                            normalizeProductKey(
+                                node.text
+                            ).contains(firstWord)
+                        }
+                        .map {
+                            getRect(it.node).top
+                        }
+                        .filter {
+                            it > productTop
+                        }
+                        .minOrNull()
+                }
+                .minOrNull()
+
+        val productBottom =
+            nextProductTop?.minus(5)
+                ?: (
+                    orderedNodes
+                        .map {
+                            getRect(it.node).bottom
+                        }
+                        .filter {
+                            it > productTop
+                        }
+                        .minOrNull()
+                        ?: productRect.bottom
+                    )
+
+        val numericValues =
+            mutableListOf<Double>()
+
+        for (j in index until orderedNodes.size) {
+            val node = orderedNodes[j]
+            val rect = getRect(node.node)
+
+            if (rect.top > productBottom + 20) {
+                break
+            }
+
+            if (isNumericToken(node.text)) {
+                numericValue(node.text)?.let {
+                    if (
+                        it > 0.0 &&
+                            it < 100000.0
+                    ) {
+                        numericValues.add(it)
+                    }
+                }
+            }
+        }
+
+        if (numericValues.isEmpty()) {
+            addLog(
+                "⚠️ لم يتم العثور على سعر: " +
+                    deal.originalName
+            )
+            continue
+        }
+
+        val newPrice =
+            numericValues.minOrNull()
+                ?: continue
+
+        val oldPrice =
+            numericValues
+                .filter {
+                    it > newPrice
+                }
+                .maxOrNull()
+
+        val discountFromDeal =
+            Regex("بخصم\\s*(\\d+)%")
+                .find(deal.dealText)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+                ?: 0
+
+        val calculatedDiscount =
+            calculateDiscount(
+                oldPrice,
+                newPrice
+            ) ?: 0
+
+        val discount =
+            maxOf(
+                discountFromDeal,
+                calculatedDiscount
+            )
+
+        if (discount <= 0) {
+            continue
+        }
+
+        val description =
+            "${deal.originalName} ب " +
+                "${formatPrice(newPrice)} جنيه " +
+                "بخصم $discount%"
+
+        results.add(
+            CartProduct(
+                textDescription = description,
+                topY = productTop,
+                bottomY = productBottom
+            )
+        )
+
+        usedDeals.add(dealKey)
+
+        addLog(
+            "🧾 Cart product: $description"
+        )
+    }
+
+    val finalResults =
+        results.distinctBy {
+            uniqueProductKey(
+                it.textDescription
+            )
+        }
+
+    addLog(
+        "📊 Cart parser result: " +
+            "${finalResults.size}/${deals.size} products"
+    )
+
+    return finalResults
+}
+
+    private fun smartScrollRabbitCart(
+    parsedProducts: List<CartProduct>,
+    previousSignature: String,
+    sentProducts: Set<String>
+): Boolean {
+    val metrics = resources.displayMetrics
+
+    val startY =
+        metrics.heightPixels * 0.82f
+
+    val endY =
+        metrics.heightPixels * 0.28f
+
+    addLog(
+        "↕️ Rabbit scroll: " +
+            "start=${startY.toInt()}, " +
+            "end=${endY.toInt()}, " +
+            "parsed=${parsedProducts.size}"
+    )
+
+    val path = Path().apply {
+        moveTo(
+            metrics.widthPixels * 0.50f,
+            startY
+        )
+
+        lineTo(
+            metrics.widthPixels * 0.50f,
+            endY
+        )
+    }
+
+    val dispatched = dispatchGesture(
+        GestureDescription.Builder()
+            .addStroke(
+                GestureDescription.StrokeDescription(
+                    path,
+                    0L,
+                    1800L
+                )
+            )
+            .build(),
+        null,
+        null
+    )
+
+    if (!dispatched) {
+        addLog(
+            "❌ dispatchGesture فشل."
+        )
+        return false
+    }
+
+    Thread.sleep(1800)
+
+    repeat(20) {
+        Thread.sleep(300)
+
+        val newSignature =
+            cartScreenSignature(
+                cartVisibleNodes()
+            )
+
+        if (
+            newSignature.isNotBlank() &&
+                newSignature != previousSignature
+        ) {
+            addLog(
+                "✅ تغيرت شاشة السلة."
+            )
+            return true
+        }
+    }
+
+    addLog(
+        "⚠️ لم تتغير الشاشة بعد التمرير."
+    )
+
+    return false
+}
+    
 private fun uniqueProductKey(
     text: String
 ): String {
@@ -270,6 +598,7 @@ private fun formatPrice(
 }
 
 
+    
 
     private fun normalizeOcrText(
     text: String
