@@ -219,57 +219,36 @@ class DealScannerService : AccessibilityService() {
         return minPrice?.toString()
     }
 
-    private fun extractRabbitProductInfo(cardNode: AccessibilityNodeInfo, discountPercent: Int): RabbitProductInfo? {
+    private fun extractRabbitProductInfo(cardNode: AccessibilityNodeInfo): RabbitProductInfo? {
         val texts = mutableListOf<String>()
         collectTextsFromNode(cardNode, texts)
-        val rawList = texts.map { it.trim() }.filter { it.isNotEmpty() }
-        val combinedText = rawList.joinToString(" ")
-
-        addLog("🔍 [تحليل كارت رابيت] النص الخام: $combinedText")
-
-        val normalizedForPrice = combinedText.replace(Regex("""(\d+)\s+(\d{2})\b"""), "$1.$2")
-        val allNumbers = Regex("""\d+(?:\.\d{1,2})?""").findAll(normalizedForPrice).map { it.value.toDouble() }.toList().sortedDescending()
-
-        var actualNewPrice: Double? = null
-        var actualOldPrice: Double? = null
+        val rawText = normalizeRabbitText(texts.distinct().joinToString(" "))
+        if (rawText.isBlank()) return null
         
-        for (i in 0 until allNumbers.size - 1) {
-            for (j in i + 1 until allNumbers.size) {
-                val oldP = allNumbers[i]
-                val newP = allNumbers[j]
-                if (oldP == 0.0) continue
-                val calcDiscount = Math.round(((oldP - newP) / oldP) * 100).toInt()
-                if (Math.abs(calcDiscount - discountPercent) <= 2) {
-                    actualNewPrice = newP
-                    actualOldPrice = oldP
-                    break
-                }
-            }
-            if (actualNewPrice != null) break
-        }
-
-        val finalSalePrice = actualNewPrice?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
-
-        val unitRegex = Regex("(?i)\\b\\d+(?:[.,]\\d+)?\\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\\b")
-        val unit = unitRegex.find(combinedText)?.value?.trim()
-
-        var cleanName = combinedText
-            .replace(Regex("""\b\d+\s+\d{2}\b"""), "") 
-            .replace(Regex("""\b(00)\b"""), "") 
-            .replace(unitRegex, "") 
-            .replace(Regex("""(?i)\b(egp|جنيه|add|اضف|أضف|favorite|مفضلة|%|٪|-)\b"""), "")
-            .replace("+", "")
-            .replace("\n", " ")
-            .replace(Regex("""\s+"""), " ")
+        // دعم شامل للوحدات الإنجليزية والعربية
+        val unitRegex = Regex("""(?i)\b\d+(?:[.,]\d+)?\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\b""")
+        val unit = unitRegex.find(rawText)?.value?.replace(",", ".")?.trim()
+        
+        val beforeCurrency = Regex("""(?i)\bEGP\b|جنيه""").find(rawText)
+            ?.let { rawText.substring(0, it.range.first) } ?: rawText
+            
+        var name = beforeCurrency
+            .replace(Regex("""[-]?\s*\d{1,2}\s*[%٪]-?"""), "") 
+            .replace(Regex("""(?i)\badd\b|أضف|اضف"""), "")
+            .replace(Regex("""(?i)\bfavorite\b|مفضلة"""), "")
+            .replace(Regex("""\+"""), "")
+            .replace(unitRegex, "")
+            .replace(Regex("""\b\d+(?:[.,]\d+)?\b"""), "") 
+            .replace(Regex("\\s+"), " ")
             .trim()
             
-        if (actualNewPrice != null) cleanName = cleanName.replace(actualNewPrice.toString(), "").replace(actualNewPrice.toInt().toString(), "")
-        if (actualOldPrice != null) cleanName = cleanName.replace(actualOldPrice.toString(), "").replace(actualOldPrice.toInt().toString(), "")
-
-        addLog("🧠 [النتيجة] الاسم: '$cleanName' | السعر الصحيح: '$finalSalePrice' | الوحدة: '$unit'")
-
-        if (cleanName.length < 3) return null
-        return RabbitProductInfo(name = cleanName.trim(), unit = unit, salePrice = finalSalePrice)
+        name = name.replace("EGP", "", ignoreCase = true)
+            .replace("جنيه", "", ignoreCase = true)
+            .replace("Add", "", ignoreCase = true)
+            .replace("Favorite", "", ignoreCase = true).trim()
+            
+        if (name.length < 3) return null
+        return RabbitProductInfo(name = name, unit = unit, salePrice = extractRabbitSalePrice(rawText))
     }
 
     private fun findRabbitProductCard(badgeNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -505,11 +484,9 @@ class DealScannerService : AccessibilityService() {
             val cardKey = "${cardRect.left}:${cardRect.top}:${cardRect.right}:${cardRect.bottom}"
             if (!processedCards.add(cardKey)) continue
             
-            val productInfo = extractRabbitProductInfo(productCard, discountPercent)
+            val productInfo = extractRabbitProductInfo(productCard)
             if (productInfo == null || productInfo.name.length < 3) continue
             
-            addLog("🔍 [Rabbit] مطابق للخصم: ${productInfo.name} | السعر: ${productInfo.salePrice} | الخصم: $discountPercent%")
-
             val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
             if (processed.contains(productKey)) continue
             
@@ -521,6 +498,7 @@ class DealScannerService : AccessibilityService() {
 
             var plusClicked = false
             
+            // البوت سيعتمد حصرياً على الذكاء الهندسي الآمن ولن ينقر نقراً أعمى أبداً
             val addButton = findRabbitAddButton(productCard)
             if (addButton != null) {
                 plusClicked = clickNodeCenter(addButton)
@@ -545,8 +523,6 @@ class DealScannerService : AccessibilityService() {
                 append(displayName)
                 if (!productInfo.salePrice.isNullOrBlank()) {
                     append(" ب ").append(productInfo.salePrice).append(" جنيه")
-                } else {
-                    append(" (تعذر قراءة السعر بدقة)")
                 }
                 append(" بخصم ").append(discountPercent).append("%")
             }
@@ -555,7 +531,7 @@ class DealScannerService : AccessibilityService() {
             processed.add(productKey)
             historyMap[productKey] = System.currentTimeMillis()
             saveHistoryMap(prefs, historyMap)
-            addLog("✅ [تمت الإضافة للسلة]: $dealText")
+            addLog("✅ Rabbit: تمت إضافة عرض: $dealText")
             
             return true 
         }
@@ -928,14 +904,6 @@ class DealScannerService : AccessibilityService() {
             val visibleNodes = cartVisibleNodes()
             val signature = cartScreenSignature(visibleNodes)
 
-            if (appType == "RABBIT") {
-                val screenTexts = visibleNodes.map { it.text.replace("\n", " ").trim() }.filter { it.isNotBlank() && !it.matches(Regex("\\d+")) }
-                addLog("🛒 [Rabbit] نصوص شاشة السلة: ${screenTexts.take(8).joinToString(" | ")}")
-            } else {
-                val visibleTexts = visibleNodes.map { it.text.trim() }.filter { it.isNotEmpty() && !it.matches(Regex("\\d+")) }
-                addLog("🛒 [نصوص السلة حالياً]: ${visibleTexts.take(8).joinToString(" | ")}")
-            }
-
             if (signature.isBlank()) {
                 addLog("⚠️ تعذر قراءة عناصر السلة في الدورة $loopCount.")
                 break
@@ -959,15 +927,7 @@ class DealScannerService : AccessibilityService() {
             val currentBatch = deals
                 .asSequence()
                 .filter { !it.isAssigned }
-                .mapNotNull { deal -> 
-                    val match = findDealPositionInCart(deal, visibleNodes)
-                    if (match != null) {
-                        addLog("🔗 [تمت المطابقة]: '${deal.originalName}' موجود بالسلة.")
-                    } else {
-                        addLog("⚠️ [لم يتطابق]: '${deal.originalName}' غير ظاهر بالشاشة الحالية.")
-                    }
-                    match
-                }
+                .mapNotNull { findDealPositionInCart(it, visibleNodes) }
                 .sortedBy { it.top }
                 .take(5)
                 .map { it.deal }
