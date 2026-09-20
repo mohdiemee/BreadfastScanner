@@ -486,6 +486,12 @@ class DealScannerService : AccessibilityService() {
             val productInfo = extractRabbitProductInfo(productCard)
             if (productInfo == null || productInfo.name.length < 3) continue
             
+            // ==========================================
+            // التعديل المطلوب: تسجيل بيانات المنتج الذي يحقق الخصم
+            // ==========================================
+            addLog("🔎 يحقق شرط الخصم ($discountPercent%): ${productInfo.name} - السعر: ${productInfo.salePrice ?: "غير متاح"}")
+            // ==========================================
+            
             val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
             if (processed.contains(productKey)) continue
             
@@ -1019,6 +1025,12 @@ class DealScannerService : AccessibilityService() {
                         if (!sentProducts.contains(uniqueKey)) {
                             currentBatchText.add(dealText)
                             sentProducts.add(uniqueKey)
+                            
+                            // ==========================================
+                            // التعديل المطلوب: تسجيل محتويات السلة قبل التصوير
+                            // ==========================================
+                            addLog("🛒 متواجد في السلة: $dealText")
+                            // ==========================================
                         }
                     }
                 }
