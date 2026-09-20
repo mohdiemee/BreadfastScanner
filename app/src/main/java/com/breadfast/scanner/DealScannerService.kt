@@ -967,6 +967,10 @@ class DealScannerService : AccessibilityService() {
     @TargetApi(30)
     private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
         addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
+        
+        // لوج يطبع المنتجات اللي البوت رايح بيها السلة أصلاً
+        val dealsListText = deals.joinToString(" | ") { it.originalName }
+        addLog("📋 المنتجات المحولة للسلة: $dealsListText")
 
         if (!isCartAlreadyOpen) {
             val cartNode = findNodeByText(rootInActiveWindow, "Cart")
@@ -981,62 +985,57 @@ class DealScannerService : AccessibilityService() {
 
         if (deals.isEmpty()) return
 
-        // ---------------------------------------------------------
-        // مسار تطبيق رابيت (الاعتماد على محتوى السلة حصرياً)
-        // ---------------------------------------------------------
         if (appType == "RABBIT") {
             var loopCount = 0
             var lastSignature = ""
             var unchangedScreens = 0
-            val sentProducts = mutableSetOf<String>() // لتتبع المنتجات التي تم إرسالها وعدم تكرارها
+            val sentProducts = mutableSetOf<String>()
 
             while (loopCount < 20) {
                 loopCount++
-
                 val visibleNodes = cartVisibleNodes()
                 val signature = cartScreenSignature(visibleNodes)
 
                 if (signature.isBlank()) {
-                    addLog("⚠️ تعذر قراءة عناصر السلة في الدورة $loopCount.")
+                    addLog("⚠️ تعذر قراءة أي عناصر في السلة (الدورة $loopCount).")
                     break
                 }
+
+                // لوج ضروري جداً يطبع كل النصوص اللي ظاهرة في الشاشة عشان نعرف الدالة بتفشل ليه
+                addLog("🔍 نصوص الشاشة الحالية: ${visibleNodes.joinToString(" - ") { it.text }}")
 
                 if (signature == lastSignature) {
                     unchangedScreens++
                     if (unchangedScreens >= 2 || !moveCartAndWait(signature)) {
-                        addLog("🏁 لا توجد صفحة جديدة في السلة لإرسالها.")
+                        addLog("🏁 لم تتغير شاشة السلة بعد السحب، سيتم إنهاء التقرير.")
                         break
                     }
                     continue
                 }
                 unchangedScreens = 0
 
-                // تجميع العناصر في صفوف وتحليلها
                 val rows = groupNodesIntoRows(visibleNodes)
                 val currentBatchText = mutableListOf<String>()
 
                 for (row in rows) {
                     val dealText = parseRabbitCartRow(row)
                     if (dealText != null) {
-                        // نستخدم الاسم كمعرف فريد لمنع التكرار (نأخذ ما قبل القوس)
                         val uniqueKey = dealText.substringBefore("(").trim()
                         if (!sentProducts.contains(uniqueKey)) {
                             currentBatchText.add(dealText)
                             sentProducts.add(uniqueKey)
-                            
-                            // ==========================================
-                            // التعديل المطلوب: تسجيل محتويات السلة قبل التصوير
-                            // ==========================================
-                            addLog("🛒 متواجد في السلة: $dealText")
-                            // ==========================================
+                            addLog("🛒 نجح استخراج المنتج من السلة: $dealText")
                         }
                     }
                 }
 
-                // إذا لم نجد منتجات جديدة في هذه الشاشة (تم إرسالها مسبقاً)، نتجاوز التصوير ونسحب للأسفل
                 if (currentBatchText.isEmpty()) {
+                    addLog("⚠️ الفلترة فشلت! لم يتمكن البوت من تكوين منتج صحيح من النصوص السابقة. جاري السحب للأسفل...")
                     lastSignature = signature
-                    if (!moveCartAndWait(signature)) break
+                    if (!moveCartAndWait(signature)) {
+                        addLog("🏁 السلة انتهت، خروج.")
+                        break
+                    }
                     continue
                 }
 
@@ -1047,16 +1046,14 @@ class DealScannerService : AccessibilityService() {
                     try {
                         val topCrop = (bitmap.height * 0.20).toInt()
                         val bottomCrop = (bitmap.height * 0.18).toInt()
-                        val croppedBitmap = Bitmap.createBitmap(
-                            bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop
-                        )
+                        val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
                         val stream = ByteArrayOutputStream()
                         croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                         imageBytes = stream.toByteArray()
                         croppedBitmap.recycle()
                         bitmap.recycle()
                     } catch (e: Exception) {
-                        addLog("❌ خطأ في معالجة Screenshot: ${e.message}")
+                        addLog("❌ خطأ قص الصورة: ${e.message}")
                     }
                 }
 
@@ -1064,42 +1061,37 @@ class DealScannerService : AccessibilityService() {
                 val caption = (prefix + currentBatchText.joinToString("\n\n")).take(1020)
 
                 if (imageBytes != null) {
-                    addLog("📸 إرسال صورة بها ${currentBatchText.size} منتجات (تم ترتيبها من السلة)...")
+                    addLog("📸 تم التقاط صورة السلة. جاري الإرسال...")
                     sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
                 } else {
+                    addLog("⚠️ فشل التقاط الصورة، جاري إرسال تقرير نصي...")
                     sendTelegramMessage(token, chatId, caption)
                 }
 
                 lastSignature = signature
-
-                // السحب للأسفل لاستكمال باقي السلة
-                if (!moveCartAndWait(signature)) {
-                    break
-                }
+                if (!moveCartAndWait(signature)) break
             }
             return
         }
 
-        // ---------------------------------------------------------
-        // مسار تطبيق بريدفاست (الكود القديم الناجح بدون تعديل)
-        // ---------------------------------------------------------
+        // مسار تطبيق بريدفاست (الكود القديم بدون تعديل)
         deals.forEach { it.isAssigned = false }
-        var loopCount = 0
-        var lastSignature = ""
-        var unchangedScreens = 0
+        var loopCountBF = 0
+        var lastSignatureBF = ""
+        var unchangedScreensBF = 0
 
-        while (deals.any { !it.isAssigned } && loopCount < 20) {
-            loopCount++
+        while (deals.any { !it.isAssigned } && loopCountBF < 20) {
+            loopCountBF++
             val visibleNodes = cartVisibleNodes()
             val signature = cartScreenSignature(visibleNodes)
 
             if (signature.isBlank()) break
-            if (signature == lastSignature) {
-                unchangedScreens++
-                if (unchangedScreens >= 2 || !moveCartAndWait(signature)) break
+            if (signature == lastSignatureBF) {
+                unchangedScreensBF++
+                if (unchangedScreensBF >= 2 || !moveCartAndWait(signature)) break
                 continue
             }
-            unchangedScreens = 0
+            unchangedScreensBF = 0
 
             val currentBatch = deals
                 .asSequence()
@@ -1111,7 +1103,7 @@ class DealScannerService : AccessibilityService() {
                 .toList()
 
             if (currentBatch.isEmpty()) {
-                lastSignature = signature
+                lastSignatureBF = signature
                 if (!moveCartAndWait(signature)) break
                 continue
             }
@@ -1132,17 +1124,18 @@ class DealScannerService : AccessibilityService() {
                 } catch (e: Exception) { }
             }
 
-            val prefix = if (loopCount == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
+            val prefix = if (loopCountBF == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
             val caption = (prefix + currentBatch.joinToString("\n\n") { it.dealText }).take(1020)
 
             if (imageBytes != null) {
+                addLog("📸 تم التقاط صورة بريدفاست. جاري الإرسال...")
                 sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
             } else {
                 sendTelegramMessage(token, chatId, caption)
             }
 
             currentBatch.forEach { it.isAssigned = true }
-            lastSignature = signature
+            lastSignatureBF = signature
 
             if (deals.any { !it.isAssigned }) {
                 if (!moveCartAndWait(signature)) break
@@ -1215,8 +1208,8 @@ class DealScannerService : AccessibilityService() {
                 addLog("❌ Telegram: التوكن أو Chat ID فارغ، راجع الإعدادات.")
                 return
             }
-
-            addLog("📤 Telegram: جاري رفع الصورة وإرسال التقرير (حجم النص: ${caption.length} حرف)...")
+            
+            addLog("📤 Telegram: جاري رفع صورة السلة للتليجرام (حجم التقرير: ${caption.length} حرف)...")
 
             val boundary = "Boundary-${System.currentTimeMillis()}"
             val url = URL("https://api.telegram.org/bot${token.trim()}/sendPhoto")
@@ -1248,7 +1241,7 @@ class DealScannerService : AccessibilityService() {
             } catch (_: Exception) { "No response text" }
             
             if (responseCode in 200..299) {
-                addLog("✅ Telegram: تم رفع الصورة بنجاح (HTTP $responseCode).")
+                addLog("✅ Telegram: تم النشر بنجاح! (HTTP $responseCode)")
             } else {
                 addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
             }
@@ -1262,8 +1255,7 @@ class DealScannerService : AccessibilityService() {
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
         var connection: HttpURLConnection? = null
         try {
-            addLog("📤 Telegram: جاري إرسال تقرير نصي بديل...")
-            
+            addLog("📤 Telegram: جاري إرسال تقرير نصي بديل (بدون صورة)...")
             val url = URL("https://api.telegram.org/bot$token/sendMessage")
             connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
