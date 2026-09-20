@@ -871,10 +871,10 @@ class DealScannerService : AccessibilityService() {
 
     private fun findDealPositionInCart(deal: DealData, visibleNodes: List<NodeData>): PositionedDeal? {
         val words = normalizeForCartMatch(deal.originalName)
-            .split(Regex("""\\s+"""))
+            .split(Regex("\\s+"))
             .filter {
                 it.length >= 3 &&
-                !it.matches(Regex("""\\d+""")) &&
+                !it.matches(Regex("\\d+")) &&
                 it !in setOf("جم", "قطعه", "قطعة", "pcs", "pc", "g", "gm", "kg", "ml", "egp", "جنيه")
             }
             .distinct()
