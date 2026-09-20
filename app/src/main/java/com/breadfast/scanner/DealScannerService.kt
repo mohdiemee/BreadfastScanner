@@ -221,7 +221,113 @@ class DealScannerService : AccessibilityService() {
 }
 
 
+    private fun extractOcrWords(
+    bitmap: Bitmap
+): List<OcrWord> {
+    if (!ensureOcrReady()) {
+        return emptyList()
+    }
 
+    val prepared = try {
+        prepareBitmapForOcr(bitmap)
+    } catch (e: Exception) {
+        addLog(
+            "❌ فشل تجهيز صورة OCR Words: " +
+                e.message
+        )
+        return emptyList()
+    }
+
+    return try {
+        val words =
+            arabicOcr?.recognizeWords(prepared)
+                ?: emptyList()
+
+        addLog(
+            "🧠 OCR words count=" +
+                words.size
+        )
+
+        words
+    } catch (e: Exception) {
+        addLog(
+            "❌ فشل OCR Words: " +
+                "${e.javaClass.simpleName}: " +
+                e.message
+        )
+        emptyList()
+    } finally {
+        if (!prepared.isRecycled) {
+            prepared.recycle()
+        }
+    }
+}
+
+    private fun buildOrderedOcrText(
+    words: List<OcrWord>
+): String {
+    if (words.isEmpty()) {
+        return ""
+    }
+
+    val lineTolerance = 32
+
+    val groupedLines =
+        words
+            .sortedBy { word ->
+                word.top
+            }
+            .fold(
+                mutableListOf<MutableList<OcrWord>>()
+            ) { lines, word ->
+                val wordCenterY =
+                    (word.top + word.bottom) / 2
+
+                val targetLine =
+                    lines.firstOrNull { line ->
+                        val lineCenterY =
+                            line
+                                .map { item ->
+                                    (item.top + item.bottom) / 2
+                                }
+                                .average()
+                                .toInt()
+
+                        kotlin.math.abs(
+                            wordCenterY - lineCenterY
+                        ) <= lineTolerance
+                    }
+
+                if (targetLine != null) {
+                    targetLine.add(word)
+                } else {
+                    lines.add(
+                        mutableListOf(word)
+                    )
+                }
+
+                lines
+            }
+
+    return groupedLines
+        .sortedBy { line ->
+            line.minOf { word ->
+                word.top
+            }
+        }
+        .joinToString("\n") { line ->
+            line
+                .sortedByDescending { word ->
+                    word.left
+                }
+                .joinToString(" ") { word ->
+                    word.text
+                }
+                .replace(Regex("""\s+"""), " ")
+                .trim()
+        }
+}
+    
     private fun normalizeOcrText(
     text: String
 ): String {
