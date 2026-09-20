@@ -838,7 +838,9 @@ class DealScannerService : AccessibilityService() {
 
         val oldPrice = prices[0]
         val newPrice = prices.last()
-        val discount = kotlin.math.roundToInt(((oldPrice - newPrice) / oldPrice) * 100.0)
+        
+        // التعديل هنا: استخدام toInt() لتجنب خطأ roundToInt وتوحيد الحساب مع بريدفاست
+        val discount = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
 
         if (discount <= 0) return null
 
