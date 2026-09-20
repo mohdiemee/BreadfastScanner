@@ -959,7 +959,8 @@ class DealScannerService : AccessibilityService() {
         val latch = CountDownLatch(1)
         val executor = Executors.newSingleThreadExecutor()
         try {
-            val dispatched = takeScreenshot(
+            // استدعاء دالة التصوير مباشرة بدون إسنادها لمتغير لأنها تُرجع Void (Unit)
+            takeScreenshot(
                 Display.DEFAULT_DISPLAY,
                 executor,
                 object : AccessibilityService.TakeScreenshotCallback {
@@ -985,11 +986,6 @@ class DealScannerService : AccessibilityService() {
                     }
                 }
             )
-            
-            if (!dispatched) {
-                addLog("❌ Screenshot: النظام رفض بدء طلب الالتقاط.")
-                return null
-            }
             
             val completed = latch.await(7, TimeUnit.SECONDS)
             if (!completed) {
