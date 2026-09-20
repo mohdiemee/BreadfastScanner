@@ -2,10 +2,7 @@ package com.breadfast.scanner
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Rect
+import com.googlecode.tesseract.android.ResultIterator
 import com.googlecode.tesseract.android.TessBaseAPI
 import java.io.File
 import java.io.FileOutputStream
@@ -57,12 +54,76 @@ class ArabicOcrEngine(
                 ?.replace("\u000C", "")
                 ?.replace("\r", "")
                 ?.lines()
-                ?.map { it.trim() }
-                ?.filter { it.isNotBlank() }
+                ?.map { line ->
+                    line.trim()
+                }
+                ?.filter { line ->
+                    line.isNotBlank()
+                }
                 ?.joinToString("\n")
                 ?: ""
         } catch (_: Exception) {
             ""
+        } finally {
+            api.clear()
+        }
+    }
+
+    fun recognizeWords(
+        bitmap: Bitmap
+    ): List<OcrWord> {
+        val api = tess ?: return emptyList()
+
+        return try {
+            api.setImage(bitmap)
+
+            val iterator: ResultIterator =
+                api.resultIterator
+                    ?: return emptyList()
+
+            val level =
+                TessBaseAPI.PageIteratorLevel.RIL_WORD
+
+            val words = mutableListOf<OcrWord>()
+
+            iterator.begin()
+
+            do {
+                val rawText =
+                    iterator.getUTF8Text(level)
+                        ?.replace("\u000C", "")
+                        ?.replace("\n", " ")
+                        ?.replace("\r", " ")
+                        ?.trim()
+                        .orEmpty()
+
+                val confidence =
+                    iterator.confidence(level)
+
+                val box =
+                    iterator.boundingBox(level)
+
+                if (
+                    rawText.isNotBlank() &&
+                    box != null &&
+                    confidence >= 15f
+                ) {
+                    words.add(
+                        OcrWord(
+                            text = rawText,
+                            left = box.left,
+                            top = box.top,
+                            right = box.right,
+                            bottom = box.bottom,
+                            confidence = confidence
+                        )
+                    )
+                }
+            } while (iterator.next(level))
+
+            words
+        } catch (_: Exception) {
+            emptyList()
         } finally {
             api.clear()
         }
@@ -86,11 +147,19 @@ class ArabicOcrEngine(
         copyAssetIfMissing("tessdata/eng.traineddata")
     }
 
-    private fun copyAssetIfMissing(assetPath: String) {
-        val fileName = assetPath.substringAfterLast("/")
-        val destination = File(tessDataDir, fileName)
+    private fun copyAssetIfMissing(
+        assetPath: String
+    ) {
+        val fileName =
+            assetPath.substringAfterLast("/")
 
-        if (destination.exists() && destination.length() > 0) {
+        val destination =
+            File(tessDataDir, fileName)
+
+        if (
+            destination.exists() &&
+            destination.length() > 0
+        ) {
             return
         }
 
