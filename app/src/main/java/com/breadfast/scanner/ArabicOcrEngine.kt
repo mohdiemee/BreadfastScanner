@@ -100,26 +100,33 @@ class ArabicOcrEngine(
                 val confidence =
                     iterator.confidence(level)
 
-                val box =
-                    iterator.boundingBox(level)
+                val bounds = IntArray(4)
+
+                val hasBounds =
+                    iterator.boundingBox(
+                        level,
+                        bounds
+                    )
 
                 if (
                     rawText.isNotBlank() &&
-                    box != null &&
+                    hasBounds &&
                     confidence >= 15f
                 ) {
                     words.add(
                         OcrWord(
                             text = rawText,
-                            left = box.left,
-                            top = box.top,
-                            right = box.right,
-                            bottom = box.bottom,
+                            left = bounds[0],
+                            top = bounds[1],
+                            right = bounds[2],
+                            bottom = bounds[3],
                             confidence = confidence
                         )
                     )
                 }
-            } while (iterator.next(level))
+            } while (
+                iterator.next(level)
+            )
 
             words
         } catch (_: Exception) {
@@ -143,8 +150,13 @@ class ArabicOcrEngine(
             tessDataDir.mkdirs()
         }
 
-        copyAssetIfMissing("tessdata/ara.traineddata")
-        copyAssetIfMissing("tessdata/eng.traineddata")
+        copyAssetIfMissing(
+            "tessdata/ara.traineddata"
+        )
+
+        copyAssetIfMissing(
+            "tessdata/eng.traineddata"
+        )
     }
 
     private fun copyAssetIfMissing(
