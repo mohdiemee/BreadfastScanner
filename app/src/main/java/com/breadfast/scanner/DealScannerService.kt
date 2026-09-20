@@ -41,7 +41,8 @@ class DealScannerService : AccessibilityService() {
         val prefs = getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
         val currentLogs = prefs.getString("APP_LOGS", "") ?: ""
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-        val newLog = "[$time] $message\n$currentLogs".lines().take(50).joinToString("\n")
+        // التعديل: زيادة عدد الأسطر إلى 1000 بدلاً من 50
+        val newLog = "[$time] $message\n$currentLogs".lines().take(1000).joinToString("\n")
         prefs.edit().putString("APP_LOGS", newLog).apply()
     }
 
@@ -486,24 +487,21 @@ class DealScannerService : AccessibilityService() {
             val productInfo = extractRabbitProductInfo(productCard)
             if (productInfo == null || productInfo.name.length < 3) continue
             
-            // ==========================================
-            // التعديل المطلوب: تسجيل بيانات المنتج الذي يحقق الخصم
-            // ==========================================
-            addLog("🔎 يحقق شرط الخصم ($discountPercent%): ${productInfo.name} - السعر: ${productInfo.salePrice ?: "غير متاح"}")
-            // ==========================================
-            
             val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
-            if (processed.contains(productKey)) continue
             
+            // التعديل: تم نقل اللوج بعد هذه السطور حتى لا يتم تسجيل المنتج إلا إذا كان جديداً ولم يتم تسجيله من قبل
+            if (processed.contains(productKey)) continue
             val lastSent = historyMap[productKey]
             if (lastSent != null && System.currentTimeMillis() - lastSent < cooldownMillis) continue
             
             val attempts = rabbitAddAttempts[productKey] ?: 0
             if (attempts >= 3) continue
 
+            // مكان اللوج الصحيح: يظهر مرة واحدة فقط لكل منتج جديد يكتشفه البوت
+            addLog("🔎 يحقق شرط الخصم ($discountPercent%): ${productInfo.name} - السعر: ${productInfo.salePrice ?: "غير متاح"}")
+
             var plusClicked = false
             
-            // البوت سيعتمد حصرياً على الذكاء الهندسي الآمن ولن ينقر نقراً أعمى أبداً
             val addButton = findRabbitAddButton(productCard)
             if (addButton != null) {
                 plusClicked = clickNodeCenter(addButton)
@@ -1218,6 +1216,8 @@ class DealScannerService : AccessibilityService() {
                 return
             }
 
+            addLog("📤 Telegram: جاري رفع الصورة وإرسال التقرير (حجم النص: ${caption.length} حرف)...")
+
             val boundary = "Boundary-${System.currentTimeMillis()}"
             val url = URL("https://api.telegram.org/bot${token.trim()}/sendPhoto")
             connection = url.openConnection() as HttpURLConnection
@@ -1248,9 +1248,8 @@ class DealScannerService : AccessibilityService() {
             } catch (_: Exception) { "No response text" }
             
             if (responseCode in 200..299) {
-                addLog("✅ Telegram: تم رفع الصورة بنجاح.")
+                addLog("✅ Telegram: تم رفع الصورة بنجاح (HTTP $responseCode).")
             } else {
-                // سيظهر لك سبب الرفض من تليجرام هنا
                 addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
             }
         } catch (e: Exception) { 
@@ -1263,6 +1262,8 @@ class DealScannerService : AccessibilityService() {
     private fun sendTelegramMessage(token: String, chatId: String, text: String) {
         var connection: HttpURLConnection? = null
         try {
+            addLog("📤 Telegram: جاري إرسال تقرير نصي بديل...")
+            
             val url = URL("https://api.telegram.org/bot$token/sendMessage")
             connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "POST"
@@ -1289,7 +1290,7 @@ class DealScannerService : AccessibilityService() {
             } catch (_: Exception) { "" }
             
             if (responseCode in 200..299) {
-                addLog("✅ Telegram: تم إرسال التقرير النصي بنجاح.")
+                addLog("✅ Telegram: تم إرسال التقرير النصي بنجاح (HTTP $responseCode).")
             } else {
                 addLog("❌ Telegram text failed: HTTP $responseCode - ${responseText.take(250)}")
             }
