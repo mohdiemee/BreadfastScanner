@@ -369,27 +369,14 @@ class DealScannerService : AccessibilityService() {
 ): Boolean {
     val metrics = resources.displayMetrics
 
-    val startY = parsedProducts
-        .asSequence()
-        .filter {
-            !sentProducts.contains(
-                uniqueProductKey(it.textDescription)
-            )
-        }
-        .map { it.bottomY }
-        .firstOrNull()
-        ?.toFloat()
-        ?.coerceIn(
-            metrics.heightPixels * 0.55f,
-            metrics.heightPixels * 0.88f
-        )
-        ?: metrics.heightPixels * 0.78f
-
-    val endY = metrics.heightPixels * 0.25f
+    val startY = metrics.heightPixels * 0.82f
+    val endY = metrics.heightPixels * 0.28f
 
     addLog(
-        "↕️ سحب السلة: start=${startY.toInt()}, " +
-            "end=${endY.toInt()}"
+        "↕️ Rabbit scroll: " +
+            "start=${startY.toInt()}, " +
+            "end=${endY.toInt()}, " +
+            "parsed=${parsedProducts.size}"
     )
 
     val path = Path().apply {
@@ -402,8 +389,8 @@ class DealScannerService : AccessibilityService() {
             .addStroke(
                 GestureDescription.StrokeDescription(
                     path,
-                    0,
-                    1300L
+                    0L,
+                    1800L
                 )
             )
             .build(),
@@ -412,11 +399,13 @@ class DealScannerService : AccessibilityService() {
     )
 
     if (!dispatched) {
-        addLog("❌ فشل إرسال Gesture السحب.")
+        addLog("❌ dispatchGesture فشل.")
         return false
     }
 
-    repeat(15) {
+    Thread.sleep(1800)
+
+    repeat(20) {
         Thread.sleep(300)
 
         val newSignature = cartScreenSignature(
@@ -427,12 +416,16 @@ class DealScannerService : AccessibilityService() {
             newSignature.isNotBlank() &&
                 newSignature != previousSignature
         ) {
-            addLog("✅ تغيرت شاشة السلة بعد السحب.")
+            addLog("✅ تغيرت شاشة السلة.")
             return true
         }
     }
 
-    addLog("⚠️ السلة لم تتغير بعد السحب.")
+    addLog(
+        "⚠️ لم تتغير الشاشة بعد التمرير؛ " +
+            "قد تكون وصلت إلى نهاية السلة."
+    )
+
     return false
 }
 
@@ -566,15 +559,125 @@ private fun openCartAndSendReport(
             }
         }
 
-        if (currentProducts.isNotEmpty()) {
-            val currentBatchText =
-                currentProducts.map { it.textDescription }
+        val screenChanged = signature != lastSignature
 
-            val captionPrefix = if (sentProducts.isEmpty()) {
-                "عروض ممتازة على Rabbit 🐰\n\n"
-            } else {
-                "وعروض Rabbit إضافية 🐰\n\n"
+if (!screenChanged && loopCount > 1) {
+    unchangedScreens++
+
+    if (unchangedScreens >= 3) {
+        addLog("🏁 الشاشة ثابتة؛ انتهاء التقرير.")
+        break
+    }
+} else {
+    unchangedScreens = 0
+}
+
+if (screenChanged || loopCount == 1) {
+    val fallbackDeals = deals
+        .filter { deal ->
+            !sentProducts.contains(
+                normalizeProductKey(deal.originalName)
+            )
+        }
+        .take(5)
+
+    if (fallbackDeals.isEmpty()) {
+        addLog("✅ لا توجد منتجات متبقية.")
+        break
+    }
+
+    val caption = (
+        if (sentProducts.isEmpty()) {
+            "عروض Rabbit 🐰\n\n"
+        } else {
+            "وعروض Rabbit إضافية 🐰\n\n"
+        } +
+            fallbackDeals.joinToString("\n\n") {
+                it.dealText
             }
+        ).take(1020)
+
+    addLog(
+        "📷 سيتم التقاط Screenshot للشاشة الحالية " +
+            "رغم أن parsedProducts=${parsedProducts.size}"
+    )
+
+    val bitmap = takeScreenshotSync()
+
+    val imageBytes = bitmap?.let {
+        try {
+            val topCrop = (it.height * 0.10f).toInt()
+            val bottomCrop = (it.height * 0.08f).toInt()
+            val cropHeight = it.height - topCrop - bottomCrop
+
+            if (cropHeight <= 100) {
+                it.recycle()
+                null
+            } else {
+                val cropped = Bitmap.createBitmap(
+                    it,
+                    0,
+                    topCrop,
+                    it.width,
+                    cropHeight
+                )
+
+                val stream = ByteArrayOutputStream()
+
+                cropped.compress(
+                    Bitmap.CompressFormat.JPEG,
+                    85,
+                    stream
+                )
+
+                cropped.recycle()
+                it.recycle()
+
+                stream.toByteArray()
+            }
+        } catch (e: Exception) {
+            addLog("❌ خطأ تجهيز Screenshot: ${e.message}")
+            it.recycle()
+            null
+        }
+    }
+
+    val sent = if (
+        imageBytes != null &&
+            imageBytes.isNotEmpty()
+    ) {
+        sendTelegramPhotoMultipart(
+            token,
+            chatId,
+            imageBytes,
+            caption
+        )
+    } else {
+        sendTelegramMessage(
+            token,
+            chatId,
+            caption
+        )
+    }
+
+    if (!sent) {
+        addLog("❌ فشل إرسال الدفعة؛ إيقاف التقرير.")
+        break
+    }
+
+    fallbackDeals.forEach {
+        sentProducts.add(
+            normalizeProductKey(it.originalName)
+        )
+    }
+
+    addLog(
+        "✅ تم إرسال دفعة: " +
+            "${fallbackDeals.size} منتجات"
+    )
+}
+
+lastSignature = signature
 
             val caption = (
                 captionPrefix +
