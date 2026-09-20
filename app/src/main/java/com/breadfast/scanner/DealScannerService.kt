@@ -788,11 +788,16 @@ class DealScannerService : AccessibilityService() {
         
         if (deals.isEmpty()) return
 
-        // إنشاء قائمة بالمنتجات التي لم يتم إرسالها بعد
-        val unassignedDeals = deals.toMutableList()
+        // التأكد من تصفير حالة الإرسال لجميع المنتجات
+        deals.forEach { it.isAssigned = false }
 
-        while (unassignedDeals.isNotEmpty()) {
-            val currentBatch = unassignedDeals.take(5) // سحب 5 منتجات كحد أقصى لكل صورة
+        val safeTopCart = resources.displayMetrics.heightPixels * 0.20f
+        val safeBottomCart = resources.displayMetrics.heightPixels * 0.82f 
+        var loopCount = 0
+
+        // الاستمرار في حلقة طالما توجد منتجات لم ترسل (مع حد أقصى 10 دورات لمنع التكرار اللانهائي)
+        while (deals.any { !it.isAssigned } && loopCount < 10) {
+            loopCount++
             val bitmap = takeScreenshotSync()
             var imageBytes: ByteArray? = null
             
@@ -811,26 +816,77 @@ class DealScannerService : AccessibilityService() {
                     addLog("❌ خطأ في معالجة الصورة: ${e.message}") 
                 }
             }
-            
-            val prefix = if (appType == "RABBIT") "عروض ممتازة على Rabbit 🐰\n\n" else "عروض ممتازة\n\n"
-            val captionText = currentBatch.joinToString("\n\n") { it.dealText }
-            val finalCaption = (prefix + captionText).take(1020)
 
-            // الإرسال الفوري للصورة مع النص (بدون أي شروط أو فلاتر مطابقة نصية)
-            if (imageBytes != null) {
-                addLog("📸 جاري إرسال صورة بها ${currentBatch.size} منتجات...")
-                sendTelegramPhotoMultipart(token, chatId, imageBytes, finalCaption)
-            } else {
-                addLog("⚠️ صورة غير متاحة، جاري الإرسال كنص...")
-                sendTelegramMessage(token, chatId, finalCaption)
+            // 1. قراءة النصوص الظاهرة في السلة حالياً
+            val visibleNodes = mutableListOf<NodeData>()
+            extractNodes(rootInActiveWindow, visibleNodes, safeTopCart, safeBottomCart)
+            val screenText = visibleNodes.joinToString(" ") { it.text.replace("\n", " ") }.lowercase(java.util.Locale.ROOT)
+            
+            val currentBatch = mutableListOf<DealData>()
+
+            // 2. مطابقة المنتجات المحفوظة مع ما هو ظاهر في الشاشة
+            for (deal in deals) {
+                if (!deal.isAssigned) {
+                    val cleanName = deal.originalName.replace("\n", " ").trim().lowercase(java.util.Locale.ROOT)
+                    // استخراج الكلمات المميزة للمنتج (3 حروف فأكثر، وبدون أرقام)
+                    val words = cleanName.split(Regex("\\s+"))
+                        .filter { it.length >= 3 && !it.matches(Regex("\\d+")) }
+                        .distinct()
+                        .take(4)
+
+                    val matchCount = words.count { word -> screenText.contains(word) }
+                    
+                    val minRequiredMatches = when {
+                        words.size >= 3 -> 2
+                        words.size == 2 -> 1
+                        else -> 1
+                    }
+                    
+                    // إذا تطابق المنتج مع الشاشة، أضفه للدفعة الحالية
+                    if (matchCount >= minRequiredMatches) {
+                        currentBatch.add(deal)
+                        deal.isAssigned = true
+                    }
+                }
+            }
+            
+            // 3. ضبط الحد الأقصى بـ 5 منتجات لكل صورة (وإرجاع الباقي كغير مرسل)
+            if (currentBatch.size > 5) {
+                val extras = currentBatch.drop(5)
+                currentBatch.retainAll(currentBatch.take(5).toSet())
+                extras.forEach { it.isAssigned = false }
             }
 
-            // إزالة المنتجات التي تم إرسالها من القائمة
-            unassignedDeals.removeAll(currentBatch)
+            // 4. خطة بديلة: إذا فشلت المطابقة ولم يتبق سوى منتجات لم ترسل، نأخذها إجبارياً لمنع توقف البوت
+            if (currentBatch.isEmpty() && deals.any { !it.isAssigned }) {
+                val unassigned = deals.filter { !it.isAssigned }.take(5)
+                unassigned.forEach { 
+                    currentBatch.add(it)
+                    it.isAssigned = true
+                }
+                addLog("⚠️ تطابق نصي ضعيف، تم إرفاق ${currentBatch.size} منتجات احتياطياً.")
+            }
 
-            if (unassignedDeals.isNotEmpty()) {
-                // سحب من فوق زر الدفع (82%) إلى أسفل الشريط الأخضر (22%)
-                // زيادة الوقت إلى 2000 ملي ثانية (ثانيتين) لتحويل السحبة إلى (سحب بطيء) يمنع الانزلاق
+            if (currentBatch.isNotEmpty()) {
+                val prefix = if (appType == "RABBIT") {
+                    if (loopCount == 1) "عروض ممتازة على Rabbit 🐰\n\n" else "وعروض Rabbit إضافية 🐰\n\n"
+                } else {
+                    if (loopCount == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
+                }
+                val captionText = currentBatch.joinToString("\n\n") { it.dealText }
+                val finalCaption = (prefix + captionText).take(1020)
+
+                if (imageBytes != null) {
+                    addLog("📸 إرسال صورة بها ${currentBatch.size} منتجات...")
+                    sendTelegramPhotoMultipart(token, chatId, imageBytes, finalCaption)
+                } else {
+                    addLog("⚠️ صورة غير متاحة، جاري الإرسال كنص...")
+                    sendTelegramMessage(token, chatId, finalCaption)
+                }
+            }
+
+            // 5. التمرير البطيء لاستعراض باقي السلة إذا تبقى منتجات
+            if (deals.any { !it.isAssigned }) {
                 swipeUp(0.82f, 0.22f, 2000L) 
                 Thread.sleep(2500)
             }
