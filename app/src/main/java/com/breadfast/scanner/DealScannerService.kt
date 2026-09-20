@@ -725,6 +725,174 @@ private fun openCartAndSendReport(
 }
 
 
+@TargetApi(30)
+private fun sendBreadfastCartReport(
+    token: String,
+    chatId: String,
+    deals: List<DealData>
+) {
+    var loopCount = 0
+    var lastSignature = ""
+    var unchangedScreens = 0
+
+    deals.forEach {
+        it.isAssigned = false
+    }
+
+    while (
+        deals.any { !it.isAssigned } &&
+            loopCount < 30
+    ) {
+        loopCount++
+
+        val visibleNodes = cartVisibleNodes()
+        val signature = cartScreenSignature(visibleNodes)
+
+        if (signature.isBlank()) {
+            addLog("⚠️ Breadfast: الشاشة فارغة.")
+            break
+        }
+
+        if (signature == lastSignature) {
+            unchangedScreens++
+
+            if (unchangedScreens >= 3) {
+                addLog(
+                    "🏁 Breadfast: الشاشة لم تعد تتغير."
+                )
+                break
+            }
+        } else {
+            unchangedScreens = 0
+        }
+
+        val currentBatch = deals
+            .asSequence()
+            .filter { !it.isAssigned }
+            .mapNotNull {
+                findDealPositionInCart(
+                    it,
+                    visibleNodes
+                )
+            }
+            .sortedBy { it.top }
+            .take(5)
+            .map { it.deal }
+            .toList()
+
+        if (currentBatch.isEmpty()) {
+            addLog(
+                "⚠️ Breadfast: لم يتم العثور على دفعة."
+            )
+
+            lastSignature = signature
+
+            if (!moveCartAndWait(signature)) {
+                break
+            }
+
+            continue
+        }
+
+        val caption = (
+            if (loopCount == 1) {
+                "عروض ممتازة\n\n"
+            } else {
+                "ودول كمان\n\n"
+            } +
+                currentBatch.joinToString("\n\n") {
+                    it.dealText
+                }
+            ).take(1020)
+
+        val bitmap = takeScreenshotSync()
+        var imageBytes: ByteArray? = null
+
+        if (bitmap != null) {
+            try {
+                val topCrop =
+                    (bitmap.height * 0.10f).toInt()
+
+                val bottomCrop =
+                    (bitmap.height * 0.08f).toInt()
+
+                val cropHeight =
+                    bitmap.height - topCrop - bottomCrop
+
+                if (cropHeight > 100) {
+                    val croppedBitmap =
+                        Bitmap.createBitmap(
+                            bitmap,
+                            0,
+                            topCrop,
+                            bitmap.width,
+                            cropHeight
+                        )
+
+                    val stream =
+                        ByteArrayOutputStream()
+
+                    croppedBitmap.compress(
+                        Bitmap.CompressFormat.JPEG,
+                        85,
+                        stream
+                    )
+
+                    imageBytes = stream.toByteArray()
+
+                    croppedBitmap.recycle()
+                }
+
+                bitmap.recycle()
+            } catch (e: Exception) {
+                addLog(
+                    "❌ Breadfast image error: " +
+                        "${e.message}"
+                )
+            }
+        }
+
+        val sent = if (
+            imageBytes != null &&
+                imageBytes!!.isNotEmpty()
+        ) {
+            sendTelegramPhotoMultipart(
+                token,
+                chatId,
+                imageBytes!!,
+                caption
+            )
+        } else {
+            sendTelegramMessage(
+                token,
+                chatId,
+                caption
+            )
+        }
+
+        if (!sent) {
+            addLog(
+                "❌ Breadfast: فشل إرسال الدفعة."
+            )
+            break
+        }
+
+        currentBatch.forEach {
+            it.isAssigned = true
+        }
+
+        lastSignature = signature
+
+        if (deals.any { !it.isAssigned }) {
+            if (!moveCartAndWait(signature)) {
+                break
+            }
+        }
+    }
+
+    addLog("✅ انتهاء تقرير Breadfast.")
+}
+
     private fun isRabbitInArabic(): Boolean {
         val root = rootInActiveWindow ?: return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
         
@@ -1066,21 +1234,60 @@ private fun openCartAndSendReport(
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
-            addLog("🛒 Rabbit: جاري فتح السلة النهائية لإرسال التقرير...")
-            if (!tapRabbitBottomTab(RabbitBottomTab.CART)) return
-            
-            val finalCartOpened = waitForAnyText("My Cart", "الكيس", "Clear all", "فضي الكيس", "Deserted cart?", "إيه الصحراء دي؟", timeoutMs = 6000L)
-            if (!finalCartOpened) return
-            Thread.sleep(4000)
+    addLog(
+        "🛒 Rabbit: تم العثور على " +
+            "${foundDeals.size} عروض، جاري فتح السلة."
+    )
 
-            if (Build.VERSION.SDK_INT >= 30) {
-                openCartAndSendReport(token, chatId, foundDeals, isCartAlreadyOpen = true, appType = "RABBIT")
-            } else {
-                sendChunksAsText(token, chatId, foundDeals.map { it.dealText }.chunked(5), appType = "RABBIT")
-            }
-        } else {
-            addLog("📉 لم يتم العثور على عروض مناسبة في رابيت حالياً.")
-        }
+    if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
+        addLog(
+            "❌ Rabbit: فشل الانتقال إلى السلة النهائية."
+        )
+        return
+    }
+
+    val finalCartOpened = waitForAnyText(
+        "My Cart",
+        "الكيس",
+        "Clear all",
+        "فضي الكيس",
+        "Deserted cart?",
+        "إيه الصحراء دي؟",
+        timeoutMs = 10000L
+    )
+
+    if (!finalCartOpened) {
+        addLog(
+            "❌ Rabbit: السلة لم تفتح خلال 10 ثوانٍ."
+        )
+        return
+    }
+
+    Thread.sleep(4500)
+
+    if (Build.VERSION.SDK_INT >= 30) {
+        openCartAndSendReport(
+            token = token,
+            chatId = chatId,
+            deals = foundDeals,
+            isCartAlreadyOpen = true,
+            appType = "RABBIT"
+        )
+    } else {
+        sendChunksAsText(
+            token,
+            chatId,
+            foundDeals
+                .map { it.dealText }
+                .chunked(5),
+            appType = "RABBIT"
+        )
+    }
+} else {
+    addLog(
+        "📉 Rabbit: لم يتم العثور على عروض."
+    )
+}
     }
     
     private fun analyzeRabbitDeals(
@@ -1501,155 +1708,393 @@ private fun openCartAndSendReport(
     }
 
 
-    private fun sendChunksAsText(token: String, chatId: String, chunks: List<List<String>>, appType: String = "BREADFAST") {
-        for (i in chunks.indices) {
-            val prefix = if (appType == "RABBIT") {
-                if (i == 0) "عروض ممتازة على Rabbit 🐰\n\n" else "وعروض Rabbit إضافية 🐰\n\n"
+    private fun sendChunksAsText(
+    token: String,
+    chatId: String,
+    chunks: List<List<String>>,
+    appType: String = "BREADFAST"
+) {
+    for (i in chunks.indices) {
+        val prefix = if (appType == "RABBIT") {
+            if (i == 0) {
+                "عروض ممتازة على Rabbit 🐰\n\n"
             } else {
-                if (i == 0) "عروض ممتازة\n" else "ودول كمان\n"
+                "وعروض Rabbit إضافية 🐰\n\n"
             }
-            sendTelegramMessage(token, chatId, (prefix + chunks[i].joinToString("\n\n")).take(1020))
-            Thread.sleep(700)
+        } else {
+            if (i == 0) {
+                "عروض ممتازة\n\n"
+            } else {
+                "ودول كمان\n\n"
+            }
         }
+
+        val sent = sendTelegramMessage(
+            token,
+            chatId,
+            (
+                prefix +
+                    chunks[i].joinToString("\n\n")
+                ).take(1020)
+        )
+
+        if (!sent) {
+            addLog(
+                "❌ توقف إرسال الدفعات عند الدفعة ${i + 1}."
+            )
+            break
+        }
+
+        Thread.sleep(700)
     }
+}
 
     @TargetApi(30)
-    private fun takeScreenshotSync(): Bitmap? {
-        var bitmap: Bitmap? = null
-        val latch = CountDownLatch(1)
-        val executor = Executors.newSingleThreadExecutor()
-        try {
-            // استدعاء دالة التصوير مباشرة بدون إسنادها لمتغير لأنها Void (Unit)
-            takeScreenshot(
-                Display.DEFAULT_DISPLAY,
-                executor,
-                object : AccessibilityService.TakeScreenshotCallback {
-                    override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
-                        try {
-                            val hardwareBuffer = screenshot.hardwareBuffer
-                            bitmap = Bitmap.wrapHardwareBuffer(hardwareBuffer, screenshot.colorSpace)?.copy(Bitmap.Config.ARGB_8888, false)
-                            hardwareBuffer.close()
-                            if (bitmap == null) {
-                                addLog("❌ Screenshot: تم الاستلام لكن فشل تحويل الصورة إلى Bitmap.")
-                            } else {
-                                addLog("✅ Screenshot: تم الالتقاط ${bitmap!!.width}x${bitmap!!.height}")
-                            }
-                        } catch (e: Exception) {
-                            addLog("❌ Screenshot conversion error: ${e.message}")
-                        } finally {
-                            latch.countDown()
+private fun takeScreenshotSync(): Bitmap? {
+    addLog("📷 بدء طلب Screenshot...")
+
+    val latch = CountDownLatch(1)
+    val executor = Executors.newSingleThreadExecutor()
+
+    var resultBitmap: Bitmap? = null
+
+    try {
+        Thread.sleep(700)
+
+        takeScreenshot(
+            Display.DEFAULT_DISPLAY,
+            executor,
+            object : AccessibilityService.TakeScreenshotCallback {
+
+                override fun onSuccess(
+                    screenshot: AccessibilityService.ScreenshotResult
+                ) {
+                    try {
+                        val hardwareBuffer =
+                            screenshot.hardwareBuffer
+
+                        val colorSpace =
+                            screenshot.colorSpace
+
+                        resultBitmap =
+                            Bitmap.wrapHardwareBuffer(
+                                hardwareBuffer,
+                                colorSpace
+                            )?.copy(
+                                Bitmap.Config.ARGB_8888,
+                                false
+                            )
+
+                        hardwareBuffer.close()
+
+                        if (resultBitmap == null) {
+                            addLog(
+                                "❌ Screenshot نجح، " +
+                                    "لكن Bitmap = null."
+                            )
+                        } else {
+                            addLog(
+                                "✅ Screenshot تم التقاطه: " +
+                                    "${resultBitmap!!.width}x" +
+                                    "${resultBitmap!!.height}"
+                            )
                         }
-                    }
-                    override fun onFailure(errorCode: Int) {
-                        addLog("❌ Screenshot failed. Error code: $errorCode")
+                    } catch (e: Exception) {
+                        addLog(
+                            "❌ Screenshot conversion error: " +
+                                "${e.message}"
+                        )
+                    } finally {
                         latch.countDown()
                     }
                 }
+
+                override fun onFailure(errorCode: Int) {
+                    addLog(
+                        "❌ Screenshot failed. " +
+                            "errorCode=$errorCode"
+                    )
+                    latch.countDown()
+                }
+            }
+        )
+
+        val completed = latch.await(
+            10,
+            TimeUnit.SECONDS
+        )
+
+        if (!completed) {
+            addLog(
+                "❌ Screenshot timeout بعد 10 ثوانٍ."
             )
-            
-            val completed = latch.await(7, TimeUnit.SECONDS)
-            if (!completed) {
-                addLog("❌ Screenshot: انتهت المهلة بدون استجابة.")
+        }
+    } catch (e: Exception) {
+        addLog(
+            "❌ Screenshot exception: ${e.message}"
+        )
+    } finally {
+        executor.shutdown()
+    }
+
+    return resultBitmap
+}
+
+    private fun sendTelegramPhotoMultipart(
+    token: String,
+    chatId: String,
+    imageBytes: ByteArray,
+    caption: String
+): Boolean {
+    var connection: HttpURLConnection? = null
+
+    return try {
+        if (token.isBlank()) {
+            addLog("❌ Telegram: BOT_TOKEN فارغ.")
+            return false
+        }
+
+        if (chatId.isBlank()) {
+            addLog("❌ Telegram: CHAT_ID فارغ.")
+            return false
+        }
+
+        if (imageBytes.isEmpty()) {
+            addLog("❌ Telegram: imageBytes فارغة.")
+            return false
+        }
+
+        addLog(
+            "📤 Telegram: رفع صورة، " +
+                "size=${imageBytes.size}, " +
+                "caption=${caption.length}"
+        )
+
+        val boundary =
+            "Boundary-${System.currentTimeMillis()}"
+
+        val url = URL(
+            "https://api.telegram.org/bot" +
+                "${token.trim()}/sendPhoto"
+        )
+
+        connection = url.openConnection()
+            as HttpURLConnection
+
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 20000
+        connection.readTimeout = 20000
+        connection.doOutput = true
+        connection.useCaches = false
+
+        connection.setRequestProperty(
+            "Content-Type",
+            "multipart/form-data; boundary=$boundary"
+        )
+
+        DataOutputStream(
+            connection.outputStream
+        ).use { output ->
+
+            fun writeField(
+                name: String,
+                value: String
+            ) {
+                output.writeBytes(
+                    "--$boundary\r\n"
+                )
+                output.writeBytes(
+                    "Content-Disposition: form-data; " +
+                        "name=\"$name\"\r\n\r\n"
+                )
+                output.write(
+                    value.toByteArray(Charsets.UTF_8)
+                )
+                output.writeBytes("\r\n")
             }
+
+            writeField("chat_id", chatId.trim())
+            writeField("caption", caption)
+            writeField("reply_markup", replyMarkup)
+
+            output.writeBytes(
+                "--$boundary\r\n" +
+                    "Content-Disposition: form-data; " +
+                    "name=\"photo\"; " +
+                    "filename=\"cart.jpg\"\r\n" +
+                    "Content-Type: image/jpeg\r\n\r\n"
+            )
+
+            output.write(imageBytes)
+            output.writeBytes("\r\n")
+            output.writeBytes("--$boundary--\r\n")
+            output.flush()
+        }
+
+        val responseCode = connection.responseCode
+
+        val responseText = try {
+            val stream =
+                if (responseCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    connection.errorStream
+                }
+
+            stream?.bufferedReader()?.use {
+                it.readText()
+            } ?: ""
         } catch (e: Exception) {
-            addLog("❌ Screenshot exception: ${e.message}")
-        } finally {
-            executor.shutdown()
+            "تعذر قراءة رد Telegram: ${e.message}"
         }
-        return bitmap
-    }
 
-    private fun sendTelegramPhotoMultipart(token: String, chatId: String, imageBytes: ByteArray, caption: String) {
-        var connection: HttpURLConnection? = null
-        try {
-            if (token.isBlank() || chatId.isBlank()) {
-                addLog("❌ Telegram: التوكن أو Chat ID فارغ، راجع الإعدادات.")
-                return
-            }
-            
-            addLog("📤 Telegram: جاري رفع صورة السلة للتليجرام (حجم التقرير: ${caption.length} حرف)...")
-
-            val boundary = "Boundary-${System.currentTimeMillis()}"
-            val url = URL("https://api.telegram.org/bot${token.trim()}/sendPhoto")
-            connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-            
-            val outputStream = DataOutputStream(connection.outputStream)
-            
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n")
-            outputStream.write((chatId.trim() + "\r\n").toByteArray(Charsets.UTF_8))
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n")
-            outputStream.write((caption + "\r\n").toByteArray(Charsets.UTF_8))
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"reply_markup\"\r\n\r\n")
-            outputStream.write((replyMarkup + "\r\n").toByteArray(Charsets.UTF_8))
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"cart.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
-            outputStream.write(imageBytes)
-            outputStream.writeBytes("\r\n--$boundary--\r\n")
-            outputStream.flush()
-            outputStream.close()
-            
-            val responseCode = connection.responseCode
-            val responseText = try {
-                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
-                stream?.bufferedReader()?.use { it.readText() } ?: ""
-            } catch (_: Exception) { "No response text" }
-            
-            if (responseCode in 200..299) {
-                addLog("✅ Telegram: تم النشر بنجاح! (HTTP $responseCode)")
-            } else {
-                addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
-            }
-        } catch (e: Exception) { 
-            addLog("❌ Telegram Exception: ${e.message}") 
-        } finally {
-            connection?.disconnect()
+        if (responseCode in 200..299) {
+            addLog(
+                "✅ Telegram photo success: " +
+                    "HTTP $responseCode"
+            )
+            true
+        } else {
+            addLog(
+                "❌ Telegram photo error: " +
+                    "HTTP $responseCode - " +
+                    responseText.take(500)
+            )
+            false
         }
+    } catch (e: Exception) {
+        addLog(
+            "❌ Telegram photo exception: " +
+                "${e.javaClass.simpleName}: ${e.message}"
+        )
+        false
+    } finally {
+        connection?.disconnect()
     }
+}
 
-    private fun sendTelegramMessage(token: String, chatId: String, text: String) {
-        var connection: HttpURLConnection? = null
-        try {
-            addLog("📤 Telegram: جاري إرسال تقرير نصي بديل (بدون صورة)...")
-            val url = URL("https://api.telegram.org/bot$token/sendMessage")
-            connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-            
-            val body = buildString {
-                append("chat_id=").append(URLEncoder.encode(chatId, "UTF-8"))
-                append("&text=").append(URLEncoder.encode(text, "UTF-8"))
-                append("&reply_markup=").append(URLEncoder.encode(replyMarkup, "UTF-8"))
-            }
-            
-            connection.outputStream.use { output ->
-                output.write(body.toByteArray(Charsets.UTF_8))
-                output.flush()
-            }
-            
-            val responseCode = connection.responseCode
-            val responseText = try {
-                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
-                stream?.bufferedReader()?.use { it.readText() } ?: ""
-            } catch (_: Exception) { "" }
-            
-            if (responseCode in 200..299) {
-                addLog("✅ Telegram: تم إرسال التقرير النصي بنجاح (HTTP $responseCode).")
-            } else {
-                addLog("❌ Telegram text failed: HTTP $responseCode - ${responseText.take(250)}")
-            }
+    private fun sendTelegramMessage(
+    token: String,
+    chatId: String,
+    text: String
+): Boolean {
+    var connection: HttpURLConnection? = null
+
+    return try {
+        if (token.isBlank()) {
+            addLog("❌ Telegram text: BOT_TOKEN فارغ.")
+            return false
+        }
+
+        if (chatId.isBlank()) {
+            addLog("❌ Telegram text: CHAT_ID فارغ.")
+            return false
+        }
+
+        if (text.isBlank()) {
+            addLog("❌ Telegram text: الرسالة فارغة.")
+            return false
+        }
+
+        addLog(
+            "📤 Telegram: إرسال نص " +
+                "(${text.length} حرف)..."
+        )
+
+        val url = URL(
+            "https://api.telegram.org/bot" +
+                "${token.trim()}/sendMessage"
+        )
+
+        connection = url.openConnection()
+            as HttpURLConnection
+
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 20000
+        connection.readTimeout = 20000
+        connection.doOutput = true
+        connection.useCaches = false
+
+        connection.setRequestProperty(
+            "Content-Type",
+            "application/x-www-form-urlencoded; " +
+                "charset=UTF-8"
+        )
+
+        val body = buildString {
+            append("chat_id=")
+            append(
+                URLEncoder.encode(
+                    chatId.trim(),
+                    "UTF-8"
+                )
+            )
+
+            append("&text=")
+            append(
+                URLEncoder.encode(
+                    text,
+                    "UTF-8"
+                )
+            )
+
+            append("&reply_markup=")
+            append(
+                URLEncoder.encode(
+                    replyMarkup,
+                    "UTF-8"
+                )
+            )
+        }
+
+        connection.outputStream.use { output ->
+            output.write(
+                body.toByteArray(Charsets.UTF_8)
+            )
+            output.flush()
+        }
+
+        val responseCode = connection.responseCode
+
+        val responseText = try {
+            val stream =
+                if (responseCode in 200..299) {
+                    connection.inputStream
+                } else {
+                    connection.errorStream
+                }
+
+            stream?.bufferedReader()?.use {
+                it.readText()
+            } ?: ""
         } catch (e: Exception) {
-            addLog("❌ Telegram text exception: ${e.message}")
-        } finally {
-            connection?.disconnect()
+            "تعذر قراءة رد Telegram: ${e.message}"
         }
+
+        if (responseCode in 200..299) {
+            addLog(
+                "✅ Telegram text success: " +
+                    "HTTP $responseCode"
+            )
+            true
+        } else {
+            addLog(
+                "❌ Telegram text error: " +
+                    "HTTP $responseCode - " +
+                    responseText.take(500)
+            )
+            false
+        }
+    } catch (e: Exception) {
+        addLog(
+            "❌ Telegram text exception: " +
+                "${e.javaClass.simpleName}: ${e.message}"
+        )
+        false
+    } finally {
+        connection?.disconnect()
     }
+}
 
     private fun swipeUp(startFactor: Float, endFactor: Float, durationMs: Long) {
         val metrics = resources.displayMetrics
