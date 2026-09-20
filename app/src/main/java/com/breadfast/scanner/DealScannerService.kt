@@ -166,92 +166,146 @@ class DealScannerService : AccessibilityService() {
         )
     }
 
-    private fun parseRabbitCartProducts(nodes: List<NodeData>, deals: List<DealData>): List<CartProduct> {
-        val products = mutableListOf<CartProduct>()
-        var startIndex = 0
-        while (startIndex < nodes.size) {
-            // تخطي أزرار الكمية (- 1 +)
-            while (startIndex < nodes.size && (nodes[startIndex].text.trim() in listOf("1", "-", "+", "2", "3") || (nodes[startIndex].text.trim().matches(Regex("^\\d+$")) && nodes[startIndex].text.length < 3))) {
-                startIndex++
-            }
-            if (startIndex >= nodes.size) break
+    private fun parseRabbitCartProducts(
+    nodes: List<NodeData>,
+    deals: List<DealData>
+): List<CartProduct> {
+    val products = mutableListOf<CartProduct>()
 
-            var currencyIndex = -1
-            for (i in startIndex until nodes.size) {
-                val t = nodes[i].text.trim()
-                if (t.contains("جنيه") || t.equals("egp", ignoreCase = true)) {
-                    currencyIndex = i
-                    break
-                }
-            }
+    if (nodes.isEmpty()) {
+        addLog("⚠️ parseRabbitCartProducts: لا توجد عناصر Accessibility.")
+        return products
+    }
 
-            if (currencyIndex != -1) {
-                val chunk = nodes.subList(startIndex, currencyIndex)
-                if (chunk.isNotEmpty()) {
-                    val topY = getRect(chunk[0].node).top
-                    val bottomY = getRect(nodes[currencyIndex].node).bottom
-                    val texts = chunk.map { it.text.trim() }
-                    
-                    // استخراج الأرقام فقط (القروش والجنيهات)
-                    val numbers = texts.filter { it.matches(Regex("^\\d+$")) }
+    val normalizedDeals = deals.map {
+        it to normalizeProductKey(it.originalName)
+    }
 
-                    if (numbers.size >= 2) {
-                        var oldPrice = 0.0
-                        var newPrice = 0.0
+    var startIndex = 0
 
-                        // ترتيب قراءة العناصر في الواجهة العربية: قرش جديد -> جنيه جديد -> قرش قديم -> جنيه قديم
-                        if (numbers.size >= 4) {
-                            val oldPound = numbers[numbers.size - 1]
-                            val oldPiaster = numbers[numbers.size - 2]
-                            val newPound = numbers[numbers.size - 3]
-                            val newPiaster = numbers[numbers.size - 4]
-                            
-                            oldPrice = "$oldPound.$oldPiaster".toDoubleOrNull() ?: 0.0
-                            newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
-                        } else {
-                            // في حالة عدم وجود سعر قديم إطلاقاً
-                            val newPound = numbers[numbers.size - 1]
-                            val newPiaster = numbers[numbers.size - 2]
-                            newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
-                        }
+    while (startIndex < nodes.size) {
+        var currencyIndex = -1
 
-                        var discount = 0
-                        if (oldPrice > newPrice && oldPrice > 0) {
-                            discount = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
-                        }
+        for (i in startIndex until nodes.size) {
+            val text = nodes[i].text.trim()
 
-                        var name = texts[0].replace(Regex("^\\d+\\s*-\\s*"), "").trim()
-                        if (texts.size > 1 && texts[1].matches(Regex(".*(قطعة|جم|كجم|مل|لتر|ق|علكة|pcs|pc|g|gm|kg|ml|l).*"))) {
-                            name += " (" + texts[1].replace(Regex("^\\d+\\s*-\\s*"), "").trim() + ")"
-                        }
-
-                        // إذا كان السعر القديم مخفياً، استنتج الخصم من الداتا الملتقطة سابقاً من صفحة العروض
-                        if (discount == 0) {
-                            val bestMatch = deals.maxByOrNull { deal ->
-                                val words = deal.originalName.split(" ").filter { it.length > 2 }
-                                words.count { name.contains(it, ignoreCase = true) }
-                            }
-                            if (bestMatch != null) {
-                                val match = Regex("بخصم (\\d+)%").find(bestMatch.dealText)
-                                if (match != null) {
-                                    discount = match.groupValues[1].toIntOrNull() ?: 0
-                                }
-                            }
-                        }
-
-                        if (discount > 0 && newPrice > 0) {
-                            val formattedPrice = if (newPrice % 1.0 == 0.0) newPrice.toInt().toString() else newPrice.toString()
-                            products.add(CartProduct("$name ب $formattedPrice جنيه بخصم $discount%", topY, bottomY))
-                        }
-                    }
-                }
-                startIndex = currencyIndex + 1
-            } else {
+            if (
+                text.contains("جنيه", ignoreCase = true) ||
+                text.equals("egp", ignoreCase = true)
+            ) {
+                currencyIndex = i
                 break
             }
         }
-        return products
+
+        if (currencyIndex == -1) break
+
+        val chunk = nodes.subList(startIndex, currencyIndex)
+
+        if (chunk.isNotEmpty()) {
+            val texts = chunk
+                .map { normalizeRabbitText(it.text) }
+                .filter { it.isNotBlank() }
+
+            val numericTokens = texts
+                .filter { isNumericToken(it) }
+                .mapNotNull { numericValue(it) }
+
+            val nameCandidates = texts.filter {
+                !isNumericToken(it) &&
+                    !it.equals("-", ignoreCase = true) &&
+                    !it.equals("+", ignoreCase = true) &&
+                    !it.matches(Regex("^\\d+$")) &&
+                    !isUnitText(it)
+            }
+
+            val combinedText = nameCandidates.joinToString(" ").trim()
+
+            val matchedDeal = normalizedDeals
+                .maxByOrNull { (_, dealName) ->
+                    val dealWords = dealName
+                        .split(Regex("\\s+"))
+                        .filter { it.length >= 3 }
+
+                    dealWords.count {
+                        normalizeProductKey(combinedText).contains(it)
+                    }
+                }
+
+            val productName = when {
+                matchedDeal != null -> matchedDeal.first.originalName
+                nameCandidates.isNotEmpty() -> nameCandidates.first()
+                else -> ""
+            }
+
+            if (productName.isNotBlank() && numericTokens.isNotEmpty()) {
+                val newPrice = numericTokens.minOrNull() ?: 0.0
+
+                val discountFromDeal = matchedDeal
+                    ?.first
+                    ?.dealText
+                    ?.let {
+                        Regex("بخصم\\s*(\\d+)%").find(it)
+                            ?.groupValues
+                            ?.getOrNull(1)
+                            ?.toIntOrNull()
+                    }
+                    ?: 0
+
+                val oldPrice = numericTokens
+                    .filter { it > newPrice }
+                    .maxOrNull()
+
+                val calculatedDiscount = if (
+                    oldPrice != null &&
+                    oldPrice > newPrice &&
+                    oldPrice > 0
+                ) {
+                    (((oldPrice - newPrice) / oldPrice) * 100).toInt()
+                } else {
+                    0
+                }
+
+                val discount = maxOf(
+                    discountFromDeal,
+                    calculatedDiscount
+                )
+
+                if (newPrice > 0 && discount > 0) {
+                    val topY = getRect(chunk.first().node).top
+                    val bottomY = getRect(nodes[currencyIndex].node).bottom
+
+                    val description =
+                        "$productName ب ${formatPrice(newPrice)} جنيه بخصم $discount%"
+
+                    products.add(
+                        CartProduct(
+                            textDescription = description,
+                            topY = topY,
+                            bottomY = bottomY
+                        )
+                    )
+
+                    addLog(
+                        "🧾 تم تحليل منتج السلة: " +
+                            "$description | top=$topY | bottom=$bottomY"
+                    )
+                }
+            }
+        }
+
+        startIndex = currencyIndex + 1
     }
+
+    addLog(
+        "📊 parseRabbitCartProducts: " +
+            "nodes=${nodes.size}, products=${products.size}"
+    )
+
+    return products.distinctBy {
+        uniqueProductKey(it.textDescription)
+    }
+}
 
     private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, previousSignature: String, sentProducts: Set<String>): Boolean {
         val metrics = resources.displayMetrics
