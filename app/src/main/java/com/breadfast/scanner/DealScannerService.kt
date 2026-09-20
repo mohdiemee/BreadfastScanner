@@ -262,19 +262,59 @@ class DealScannerService : AccessibilityService() {
     }
 
     return try {
-        val words =
-            arabicOcr?.recognizeWords(prepared)
-                ?: emptyList()
+        val text =
+            arabicOcr?.recognize(prepared)
+                ?: ""
+
+        val lines = text
+            .replace("\u000C", "")
+            .replace("\r", "")
+            .lines()
+            .map { line ->
+                normalizeOcrText(line)
+                    .trim()
+            }
+            .filter { line ->
+                line.isNotBlank()
+            }
+
+        val words = mutableListOf<OcrWord>()
+
+        lines.forEachIndexed { lineIndex, line ->
+            val lineTop = lineIndex * 60
+
+            val parts = line
+                .split(Regex("""\s+"""))
+                .filter { part ->
+                    part.isNotBlank()
+                }
+
+            parts.forEachIndexed { wordIndex, part ->
+                val left =
+                    (parts.size - wordIndex) * 40
+
+                words.add(
+                    OcrWord(
+                        text = part,
+                        left = left,
+                        top = lineTop,
+                        right = left + 35,
+                        bottom = lineTop + 45,
+                        confidence = 100f
+                    )
+                )
+            }
+        }
 
         addLog(
-            "🧠 OCR words count=" +
+            "🧠 OCR fallback words count=" +
                 words.size
         )
 
         words
     } catch (e: Exception) {
         addLog(
-            "❌ فشل OCR Words: " +
+            "❌ OCR fallback words error: " +
                 "${e.javaClass.simpleName}: " +
                 e.message
         )
