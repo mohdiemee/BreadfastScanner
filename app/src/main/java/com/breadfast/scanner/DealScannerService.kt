@@ -170,141 +170,196 @@ class DealScannerService : AccessibilityService() {
     nodes: List<NodeData>,
     deals: List<DealData>
 ): List<CartProduct> {
-    val products = mutableListOf<CartProduct>()
-
     if (nodes.isEmpty()) {
-        addLog("⚠️ parseRabbitCartProducts: لا توجد عناصر Accessibility.")
-        return products
+        addLog("⚠️ Cart parser: لا توجد Accessibility nodes.")
+        return emptyList()
     }
 
-    val normalizedDeals = deals.map {
-        it to normalizeProductKey(it.originalName)
-    }
+    val result = mutableListOf<CartProduct>()
 
-    var startIndex = 0
+    val orderedNodes = nodes
+        .mapNotNull { item ->
+            val text = normalizeRabbitText(item.text)
+            val rect = getRect(item.node)
 
-    while (startIndex < nodes.size) {
-        var currencyIndex = -1
-
-        for (i in startIndex until nodes.size) {
-            val text = nodes[i].text.trim()
-
-            if (
-                text.contains("جنيه", ignoreCase = true) ||
-                text.equals("egp", ignoreCase = true)
-            ) {
-                currencyIndex = i
-                break
+            if (text.isBlank() || rect.isEmpty) {
+                null
+            } else {
+                NodeData(text, item.node)
             }
         }
+        .sortedBy { getRect(it.node).top }
 
-        if (currencyIndex == -1) break
+    val normalizedDeals = deals.map { deal ->
+        deal to normalizeProductKey(deal.originalName)
+    }
 
-        val chunk = nodes.subList(startIndex, currencyIndex)
+    val usedDeals = mutableSetOf<String>()
 
-        if (chunk.isNotEmpty()) {
-            val texts = chunk
-                .map { normalizeRabbitText(it.text) }
-                .filter { it.isNotBlank() }
+    for (index in orderedNodes.indices) {
+        val current = orderedNodes[index]
+        val currentText = normalizeProductKey(current.text)
 
-            val numericTokens = texts
-                .filter { isNumericToken(it) }
-                .mapNotNull { numericValue(it) }
+        if (currentText.length < 3) continue
+        if (isNumericToken(current.text)) continue
+        if (isUnitText(current.text)) continue
+        if (current.text == "+" || current.text == "-") continue
 
-            val nameCandidates = texts.filter {
-                !isNumericToken(it) &&
-                    !it.equals("-", ignoreCase = true) &&
-                    !it.equals("+", ignoreCase = true) &&
-                    !it.matches(Regex("^\\d+$")) &&
-                    !isUnitText(it)
+        val matchedDeal = normalizedDeals
+            .filter { (_, normalizedName) ->
+                !usedDeals.contains(normalizedName)
             }
+            .map { pair ->
+                val deal = pair.first
+                val normalizedName = pair.second
+                val words = normalizedName
+                    .split(Regex("\\s+"))
+                    .filter { it.length >= 3 }
 
-            val combinedText = nameCandidates.joinToString(" ").trim()
-
-            val matchedDeal = normalizedDeals
-                .maxByOrNull { (_, dealName) ->
-                    val dealWords = dealName
-                        .split(Regex("\\s+"))
-                        .filter { it.length >= 3 }
-
-                    dealWords.count {
-                        normalizeProductKey(combinedText).contains(it)
-                    }
+                val score = words.count { word ->
+                    currentText.contains(word)
                 }
 
-            val productName = when {
-                matchedDeal != null -> matchedDeal.first.originalName
-                nameCandidates.isNotEmpty() -> nameCandidates.first()
-                else -> ""
+                Triple(deal, normalizedName, score)
             }
+            .maxByOrNull { it.third }
 
-            if (productName.isNotBlank() && numericTokens.isNotEmpty()) {
-                val newPrice = numericTokens.minOrNull() ?: 0.0
+        if (matchedDeal == null || matchedDeal.third == 0) {
+            continue
+        }
 
-                val discountFromDeal = matchedDeal
-                    ?.first
-                    ?.dealText
-                    ?.let {
-                        Regex("بخصم\\s*(\\d+)%").find(it)
-                            ?.groupValues
-                            ?.getOrNull(1)
-                            ?.toIntOrNull()
+        val deal = matchedDeal.first
+        val dealKey = matchedDeal.second
+
+        val productRect = getRect(current.node)
+        val productTop = productRect.top
+
+        val nextProductTop = normalizedDeals
+            .filter { (_, name) ->
+                name != dealKey &&
+                    !usedDeals.contains(name)
+            }
+            .mapNotNull { (_, name) ->
+                orderedNodes
+                    .filter { node ->
+                        val nodeText = normalizeProductKey(node.text)
+                        nodeText.contains(
+                            name.split(Regex("\\s+"))
+                                .firstOrNull { it.length >= 3 }
+                                ?: ""
+                        )
                     }
-                    ?: 0
+                    .map { getRect(it.node).top }
+                    .filter { it > productTop }
+                    .minOrNull()
+            }
+            .minOrNull()
 
-                val oldPrice = numericTokens
-                    .filter { it > newPrice }
-                    .maxOrNull()
-
-                val calculatedDiscount = if (
-                    oldPrice != null &&
-                    oldPrice > newPrice &&
-                    oldPrice > 0
-                ) {
-                    (((oldPrice - newPrice) / oldPrice) * 100).toInt()
-                } else {
-                    0
-                }
-
-                val discount = maxOf(
-                    discountFromDeal,
-                    calculatedDiscount
+        val productBottom = nextProductTop
+            ?.minus(5)
+            ?: (
+                orderedNodes
+                    .map { getRect(it.node).bottom }
+                    .filter { it > productTop }
+                    .minOrNull()
+                    ?: productRect.bottom
                 )
 
-                if (newPrice > 0 && discount > 0) {
-                    val topY = getRect(chunk.first().node).top
-                    val bottomY = getRect(nodes[currencyIndex].node).bottom
+        val numericValues = mutableListOf<Double>()
 
-                    val description =
-                        "$productName ب ${formatPrice(newPrice)} جنيه بخصم $discount%"
+        for (j in index until orderedNodes.size) {
+            val node = orderedNodes[j]
+            val rect = getRect(node.node)
 
-                    products.add(
-                        CartProduct(
-                            textDescription = description,
-                            topY = topY,
-                            bottomY = bottomY
-                        )
-                    )
+            if (rect.top > productBottom + 20) break
 
-                    addLog(
-                        "🧾 تم تحليل منتج السلة: " +
-                            "$description | top=$topY | bottom=$bottomY"
-                    )
+            if (isNumericToken(node.text)) {
+                numericValue(node.text)?.let {
+                    if (it > 0.0 && it < 100000.0) {
+                        numericValues.add(it)
+                    }
                 }
             }
         }
 
-        startIndex = currencyIndex + 1
+        if (numericValues.isEmpty()) {
+            addLog(
+                "⚠️ لم يتم العثور على سعر للمنتج: " +
+                    deal.originalName
+            )
+            continue
+        }
+
+        val newPrice = numericValues.minOrNull() ?: continue
+
+        val discountFromDeal = Regex(
+            "بخصم\\s*(\\d+)%"
+        )
+            .find(deal.dealText)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: 0
+
+        val oldPrice = numericValues
+            .filter { it > newPrice }
+            .maxOrNull()
+
+        val calculatedDiscount =
+            if (
+                oldPrice != null &&
+                    oldPrice > newPrice
+            ) {
+                (((oldPrice - newPrice) / oldPrice) * 100)
+                    .toInt()
+            } else {
+                0
+            }
+
+        val discount = maxOf(
+            discountFromDeal,
+            calculatedDiscount
+        )
+
+        if (discount <= 0) {
+            addLog(
+                "⚠️ تعذر تحديد الخصم: " +
+                    deal.originalName
+            )
+            continue
+        }
+
+        val description =
+            "${deal.originalName} ب " +
+                "${formatPrice(newPrice)} جنيه " +
+                "بخصم $discount%"
+
+        result.add(
+            CartProduct(
+                textDescription = description,
+                topY = productTop,
+                bottomY = productBottom
+            )
+        )
+
+        usedDeals.add(dealKey)
+
+        addLog(
+            "🧾 Cart product: $description | " +
+                "top=$productTop | bottom=$productBottom"
+        )
+    }
+
+    val finalProducts = result.distinctBy {
+        uniqueProductKey(it.textDescription)
     }
 
     addLog(
-        "📊 parseRabbitCartProducts: " +
-            "nodes=${nodes.size}, products=${products.size}"
+        "📊 Cart parser result: " +
+            "${finalProducts.size}/${deals.size} products"
     )
 
-    return products.distinctBy {
-        uniqueProductKey(it.textDescription)
-    }
+    return finalProducts
 }
 
     private fun smartScrollRabbitCart(
