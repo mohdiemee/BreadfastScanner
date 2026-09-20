@@ -429,7 +429,9 @@ class DealScannerService : AccessibilityService() {
     return false
 }
 
+    
     @TargetApi(30)
+@TargetApi(30)
 private fun openCartAndSendReport(
     token: String,
     chatId: String,
@@ -473,221 +475,143 @@ private fun openCartAndSendReport(
         Thread.sleep(5000)
     }
 
-    if (appType != "RABBIT") {
+    if (!appType.equals("RABBIT", ignoreCase = true)) {
         sendBreadfastCartReport(token, chatId, deals)
         return
     }
 
     val sentProducts = mutableSetOf<String>()
+
     var lastSignature = ""
     var unchangedScreens = 0
     var loopCount = 0
 
-    val metrics = resources.displayMetrics
-    val visibleTop = (metrics.heightPixels * 0.08f).toInt()
-    val visibleBottom = (metrics.heightPixels * 0.94f).toInt()
+    val maxLoops = 30
 
-    while (loopCount < 30) {
+    while (loopCount < maxLoops) {
         loopCount++
 
         val visibleNodes = cartVisibleNodes()
         val signature = cartScreenSignature(visibleNodes)
 
         addLog(
-            "🔍 سلة Rabbit: دورة=$loopCount, " +
+            "🔍 Rabbit Cart: دورة=$loopCount, " +
                 "nodes=${visibleNodes.size}, " +
-                "signatureLength=${signature.length}"
+                "signatureLength=${signature.length}, " +
+                "sent=${sentProducts.size}/${deals.size}"
         )
 
         if (signature.isBlank()) {
-            addLog("⚠️ توقيع السلة فارغ.")
-            break
+            addLog(
+                "⚠️ توقيع السلة فارغ؛ " +
+                    "لن يتم التقاط صورة لهذه الدورة."
+            )
+
+            if (loopCount >= 3) {
+                addLog("🏁 توقيع السلة فارغ عدة مرات؛ إنهاء التقرير.")
+                break
+            }
+
+            Thread.sleep(1500)
+            continue
         }
 
-        if (signature == lastSignature) {
+        val screenChanged =
+            signature != lastSignature || loopCount == 1
+
+        if (!screenChanged) {
             unchangedScreens++
 
             addLog(
-                "⚠️ نفس شاشة السلة مرة أخرى: " +
-                    "$unchangedScreens"
+                "⚠️ الشاشة لم تتغير: " +
+                    "$unchangedScreens/3"
             )
 
             if (unchangedScreens >= 3) {
-                addLog("🏁 توقفت السلة بعد ثبات الشاشة.")
+                addLog("🏁 وصلت إلى نهاية السلة.")
                 break
             }
         } else {
             unchangedScreens = 0
         }
 
-        val parsedProducts = parseRabbitCartProducts(
-            visibleNodes,
-            deals
-        )
+        val parsedProducts = try {
+            parseRabbitCartProducts(
+                visibleNodes,
+                deals
+            )
+        } catch (e: Exception) {
+            addLog(
+                "❌ خطأ في تحليل السلة: " +
+                    "${e.javaClass.simpleName}: ${e.message}"
+            )
+            emptyList()
+        }
 
         addLog(
             "📦 parsedProducts=${parsedProducts.size}, " +
                 "sentProducts=${sentProducts.size}"
         )
 
-        val notSentProducts = parsedProducts.filter { product ->
-            !sentProducts.contains(
-                uniqueProductKey(product.textDescription)
-            )
-        }
+        if (screenChanged) {
+            val parsedNotSentProducts = parsedProducts
+                .filter { product ->
+                    !sentProducts.contains(
+                        uniqueProductKey(
+                            product.textDescription
+                        )
+                    )
+                }
 
-        val visibleProducts = notSentProducts.filter { product ->
-            product.topY >= visibleTop - 150 &&
-                product.bottomY <= visibleBottom + 220
-        }
+            val fallbackDeals = deals
+                .filter { deal ->
+                    !sentProducts.contains(
+                        normalizeProductKey(
+                            deal.originalName
+                        )
+                    )
+                }
+                .take(5)
 
-        val currentProducts = when {
-            visibleProducts.isNotEmpty() -> {
-                visibleProducts.take(5)
+            if (
+                parsedNotSentProducts.isEmpty() &&
+                    fallbackDeals.isEmpty()
+            ) {
+                addLog("✅ لا توجد منتجات متبقية للإرسال.")
+                break
             }
 
-            notSentProducts.isNotEmpty() -> {
-                addLog(
-                    "⚠️ لا توجد منتجات مكتملة؛ " +
-                        "استخدام fallback من المنتجات المقروءة."
-                )
-                notSentProducts.take(5)
-            }
-
-            else -> {
-                emptyList()
-            }
-        }
-
-        val screenChanged = signature != lastSignature
-
-if (!screenChanged && loopCount > 1) {
-    unchangedScreens++
-
-    if (unchangedScreens >= 3) {
-        addLog("🏁 الشاشة ثابتة؛ انتهاء التقرير.")
-        break
-    }
-} else {
-    unchangedScreens = 0
-}
-
-if (screenChanged || loopCount == 1) {
-    val fallbackDeals = deals
-        .filter { deal ->
-            !sentProducts.contains(
-                normalizeProductKey(deal.originalName)
-            )
-        }
-        .take(5)
-
-    if (fallbackDeals.isEmpty()) {
-        addLog("✅ لا توجد منتجات متبقية.")
-        break
-    }
-
-    val caption = (
-        if (sentProducts.isEmpty()) {
-            "عروض Rabbit 🐰\n\n"
-        } else {
-            "وعروض Rabbit إضافية 🐰\n\n"
-        } +
-            fallbackDeals.joinToString("\n\n") {
-                it.dealText
-            }
-        ).take(1020)
-
-    addLog(
-        "📷 سيتم التقاط Screenshot للشاشة الحالية " +
-            "رغم أن parsedProducts=${parsedProducts.size}"
-    )
-
-    val bitmap = takeScreenshotSync()
-
-    val imageBytes = bitmap?.let {
-        try {
-            val topCrop = (it.height * 0.10f).toInt()
-            val bottomCrop = (it.height * 0.08f).toInt()
-            val cropHeight = it.height - topCrop - bottomCrop
-
-            if (cropHeight <= 100) {
-                it.recycle()
-                null
+            val batchText = if (
+                parsedNotSentProducts.isNotEmpty()
+            ) {
+                parsedNotSentProducts
+                    .take(5)
+                    .map { it.textDescription }
             } else {
-                val cropped = Bitmap.createBitmap(
-                    it,
-                    0,
-                    topCrop,
-                    it.width,
-                    cropHeight
+                addLog(
+                    "⚠️ Parser لم يقرأ منتجات؛ " +
+                        "استخدام foundDeals كمرجع."
                 )
 
-                val stream = ByteArrayOutputStream()
-
-                cropped.compress(
-                    Bitmap.CompressFormat.JPEG,
-                    85,
-                    stream
-                )
-
-                cropped.recycle()
-                it.recycle()
-
-                stream.toByteArray()
+                fallbackDeals.map { it.dealText }
             }
-        } catch (e: Exception) {
-            addLog("❌ خطأ تجهيز Screenshot: ${e.message}")
-            it.recycle()
-            null
-        }
-    }
 
-    val sent = if (
-        imageBytes != null &&
-            imageBytes.isNotEmpty()
-    ) {
-        sendTelegramPhotoMultipart(
-            token,
-            chatId,
-            imageBytes,
-            caption
-        )
-    } else {
-        sendTelegramMessage(
-            token,
-            chatId,
-            caption
-        )
-    }
-
-    if (!sent) {
-        addLog("❌ فشل إرسال الدفعة؛ إيقاف التقرير.")
-        break
-    }
-
-    fallbackDeals.forEach {
-        sentProducts.add(
-            normalizeProductKey(it.originalName)
-        )
-    }
-
-    addLog(
-        "✅ تم إرسال دفعة: " +
-            "${fallbackDeals.size} منتجات"
-    )
-}
-
-lastSignature = signature
+            val captionPrefix =
+                if (sentProducts.isEmpty()) {
+                    "عروض Rabbit 🐰\n\n"
+                } else {
+                    "وعروض Rabbit إضافية 🐰\n\n"
+                }
 
             val caption = (
                 captionPrefix +
-                    currentBatchText.joinToString("\n\n")
+                    batchText.joinToString("\n\n")
                 ).take(1020)
 
             addLog(
-                "📝 تجهيز دفعة: " +
-                    "${currentProducts.size} منتجات، " +
-                    "caption=${caption.length} حرف"
+                "📷 التقاط Screenshot للشاشة الحالية: " +
+                    "batch=${batchText.size}, " +
+                    "parsed=${parsedProducts.size}"
             )
 
             val bitmap = takeScreenshotSync()
@@ -697,7 +621,7 @@ lastSignature = signature
             if (bitmap != null) {
                 try {
                     addLog(
-                        "📐 حجم Screenshot: " +
+                        "📐 Screenshot: " +
                             "${bitmap.width}x${bitmap.height}"
                     )
 
@@ -711,8 +635,8 @@ lastSignature = signature
                         bitmap.height - topCrop - bottomCrop
 
                     if (
-                        cropHeight > 100 &&
-                            bitmap.width > 100
+                        bitmap.width > 100 &&
+                            cropHeight > 100
                     ) {
                         val croppedBitmap =
                             Bitmap.createBitmap(
@@ -735,126 +659,108 @@ lastSignature = signature
                         imageBytes = stream.toByteArray()
 
                         croppedBitmap.recycle()
+
+                        addLog(
+                            "🖼️ تم تجهيز الصورة: " +
+                                "${imageBytes.size} bytes"
+                        )
+                    } else {
+                        addLog(
+                            "⚠️ أبعاد القص غير صالحة."
+                        )
                     }
 
                     bitmap.recycle()
-
-                    addLog(
-                        "🖼️ تم تجهيز الصورة: " +
-                            "${imageBytes?.size ?: 0} bytes"
-                    )
                 } catch (e: Exception) {
                     addLog(
-                        "❌ خطأ تجهيز الصورة: " +
+                        "❌ خطأ تجهيز Screenshot: " +
+                            "${e.javaClass.simpleName}: " +
                             "${e.message}"
                     )
+
+                    try {
+                        if (!bitmap.isRecycled) {
+                            bitmap.recycle()
+                        }
+                    } catch (_: Exception) {
+                    }
                 }
             } else {
                 addLog(
-                    "⚠️ Screenshot رجع null؛ " +
-                        "سيتم إرسال النص."
+                    "⚠️ takeScreenshotSync() أعاد null."
                 )
             }
 
-            val sentSuccessfully = if (
-                imageBytes != null &&
-                    imageBytes!!.isNotEmpty()
-            ) {
-                addLog(
-                    "📤 إرسال صورة Telegram..."
-                )
+            val sentSuccessfully =
+                if (
+                    imageBytes != null &&
+                        imageBytes.isNotEmpty()
+                ) {
+                    addLog(
+                        "📤 إرسال صورة Telegram..."
+                    )
 
-                sendTelegramPhotoMultipart(
-                    token,
-                    chatId,
-                    imageBytes!!,
-                    caption
-                )
-            } else {
-                addLog(
-                    "📤 إرسال النص كبديل..."
-                )
+                    sendTelegramPhotoMultipart(
+                        token = token,
+                        chatId = chatId,
+                        imageBytes = imageBytes,
+                        caption = caption
+                    )
+                } else {
+                    addLog(
+                        "📤 لا توجد صورة؛ " +
+                            "إرسال النص كبديل..."
+                    )
 
-                sendTelegramMessage(
-                    token,
-                    chatId,
-                    caption
-                )
-            }
-
-            if (sentSuccessfully) {
-                currentProducts.forEach { product ->
-                    sentProducts.add(
-                        uniqueProductKey(
-                            product.textDescription
-                        )
+                    sendTelegramMessage(
+                        token = token,
+                        chatId = chatId,
+                        text = caption
                     )
                 }
 
-                addLog(
-                    "✅ تم اعتماد الدفعة بعد نجاح الإرسال: " +
-                        "${currentProducts.size} منتجات."
-                )
-            } else {
+            if (!sentSuccessfully) {
                 addLog(
                     "❌ فشل إرسال الدفعة؛ " +
-                        "سيتم إيقاف التقرير لمنع التكرار."
+                        "إيقاف التقرير لمنع التكرار."
                 )
                 break
             }
-        } else {
-            addLog(
-                "⚠️ لا توجد منتجات قابلة للتحليل في الشاشة الحالية."
-            )
 
-            val fallbackDeals = deals.filter { deal ->
-                !sentProducts.contains(
-                    normalizeProductKey(deal.originalName)
-                )
-            }.take(5)
-
-            if (
-                fallbackDeals.isNotEmpty() &&
-                    sentProducts.isEmpty()
-            ) {
-                val fallbackText = fallbackDeals
-                    .joinToString("\n\n") { it.dealText }
-
-                val fallbackCaption =
-                    "عروض Rabbit 🐰\n\n$fallbackText"
-                        .take(1020)
-
-                addLog(
-                    "🆘 إرسال fallback من foundDeals: " +
-                        "${fallbackDeals.size} منتجات."
-                )
-
-                val fallbackSent = sendTelegramMessage(
-                    token,
-                    chatId,
-                    fallbackCaption
-                )
-
-                if (fallbackSent) {
-                    fallbackDeals.forEach {
+            if (parsedNotSentProducts.isNotEmpty()) {
+                parsedNotSentProducts
+                    .take(5)
+                    .forEach { product ->
                         sentProducts.add(
-                            normalizeProductKey(
-                                it.originalName
+                            uniqueProductKey(
+                                product.textDescription
                             )
                         )
                     }
-                } else {
-                    addLog(
-                        "❌ فشل إرسال fallback."
+            } else {
+                fallbackDeals.forEach { deal ->
+                    sentProducts.add(
+                        normalizeProductKey(
+                            deal.originalName
+                        )
                     )
-                    break
                 }
             }
+
+            addLog(
+                "✅ تم إرسال الدفعة بنجاح. " +
+                    "الإجمالي=${sentProducts.size}/${deals.size}"
+            )
+        } else {
+            addLog(
+                "⚠️ الشاشة لم تتغير؛ " +
+                    "لن يتم إرسال Screenshot مكرر."
+            )
         }
 
         if (sentProducts.size >= deals.size) {
             addLog(
-                "✅ تم إرسال كل المنتجات: " +
+                "✅ تم إرسال جميع المنتجات: " +
                     "${sentProducts.size}/${deals.size}"
             )
             break
@@ -862,18 +768,34 @@ lastSignature = signature
 
         lastSignature = signature
 
-        val moved = smartScrollRabbitCart(
-            parsedProducts,
-            signature,
-            sentProducts
+        addLog(
+            "↕️ محاولة تمرير السلة بعد الدورة $loopCount..."
         )
+
+        val moved = try {
+            smartScrollRabbitCart(
+                parsedProducts = parsedProducts,
+                previousSignature = signature,
+                sentProducts = sentProducts
+            )
+        } catch (e: Exception) {
+            addLog(
+                "❌ خطأ أثناء تمرير السلة: " +
+                    "${e.javaClass.simpleName}: " +
+                    "${e.message}"
+            )
+            false
+        }
 
         if (!moved) {
             addLog(
-                "🏁 تعذر تحريك السلة؛ انتهاء التقرير."
+                "🏁 تعذر تحريك السلة؛ " +
+                    "غالبًا تم الوصول إلى نهايتها."
             )
             break
         }
+
+        Thread.sleep(1200)
     }
 
     addLog(
