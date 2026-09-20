@@ -300,7 +300,7 @@ private fun cleanOcrLine(
 
 private fun parseOcrCartProducts(
     ocrText: String,
-    deals: List<DealData>
+    deals: List<DealData> = emptyList()
 ): List<OcrCartProduct> {
     val lines = ocrText
         .lines()
@@ -308,119 +308,249 @@ private fun parseOcrCartProducts(
         .filter { it.isNotBlank() }
 
     if (lines.isEmpty()) {
-        addLog("⚠️ OCR لم يُرجع أسطرًا.")
+        addLog("⚠️ OCR parser: لا توجد أسطر.")
         return emptyList()
     }
 
     val products = mutableListOf<OcrCartProduct>()
 
-    val normalizedDeals = deals.map {
-        it to normalizeProductKey(it.originalName)
+    val ignoredPhrases = listOf(
+        "اختيار جامد",
+        "وفرت",
+        "جنيه",
+        "يللا ندفع",
+        "توصيل ببلاش",
+        "واو ليك"
+    )
+
+    fun isIgnoredLine(line: String): Boolean {
+        val normalized = normalizeOcrText(line)
+            .replace(" ", "")
+
+        return normalized.isBlank() ||
+            ignoredPhrases.any {
+                normalized.contains(
+                    it.replace(" ", ""),
+                    ignoreCase = true
+                )
+            }
     }
 
-    for (dealPair in normalizedDeals) {
-        val deal = dealPair.first
-        val dealName = dealPair.second
+    fun isNumericOnlyLine(line: String): Boolean {
+        return normalizeOcrText(line).matches(
+            Regex("""^[\d\s.,:;()+\-]+$""")
+        )
+    }
 
-        val matchingLines = lines.filter { line ->
-            val normalizedLine =
-                normalizeProductKey(line)
+    fun isUnitLine(line: String): Boolean {
+        return normalizeOcrText(line).matches(
+            Regex(
+                "(?i).*\\b(" +
+                    "قطعة|قطعه|جم|كجم|مل|لتر|" +
+                    "علكة|pcs?|pc|g|gm|kg|ml|l|ق" +
+                    ")\\b.*"
+            )
+        )
+    }
 
-            val words = dealName
-                .split(Regex("\\s+"))
-                .filter { it.length >= 3 }
+    fun looksLikeProductLine(line: String): Boolean {
+        val normalized = normalizeOcrText(line)
 
-            val matchedWords = words.count {
-                normalizedLine.contains(it)
+        if (normalized.length < 3) {
+            return false
+        }
+
+        if (isIgnoredLine(normalized)) {
+            return false
+        }
+
+        if (isNumericOnlyLine(normalized)) {
+            return false
+        }
+
+        if (isUnitLine(normalized)) {
+            return false
+        }
+
+        if (
+            normalized.contains("جنيه") ||
+                normalized.contains("EGP", ignoreCase = true)
+        ) {
+            return false
+        }
+
+        return normalized.any { it.isLetter() }
+    }
+
+    fun isPriceLine(line: String): Boolean {
+        val normalized = normalizeOcrText(line)
+
+        if (
+            normalized.contains("جنيه") ||
+                normalized.contains("EGP", ignoreCase = true)
+        ) {
+            return true
+        }
+
+        val values = extractOcrNumbers(normalized)
+
+        return values.any {
+            it >= 2.0
+        }
+    }
+
+    fun choosePrices(
+        values: List<Double>
+    ): Pair<Double?, Double?> {
+        val candidates = values
+            .filter {
+                it >= 2.0 &&
+                    it <= 10000.0
+            }
+            .distinct()
+
+        if (candidates.isEmpty()) {
+            return null to null
+        }
+
+        val newPrice =
+            candidates.minOrNull()
+
+        val oldPrice =
+            candidates
+                .filter {
+                    newPrice != null &&
+                        it > newPrice
+                }
+                .maxOrNull()
+
+        return oldPrice to newPrice
+    }
+
+    var index = 0
+
+    while (index < lines.size) {
+        val firstLine = lines[index]
+
+        if (!looksLikeProductLine(firstLine)) {
+            index++
+            continue
+        }
+
+        val productBlock =
+            mutableListOf<String>()
+
+        productBlock.add(firstLine)
+
+        var cursor = index + 1
+        var priceFound = false
+
+        while (
+            cursor < lines.size &&
+                cursor <= index + 8
+        ) {
+            val line = lines[cursor]
+
+            if (
+                looksLikeProductLine(line) &&
+                    productBlock.size > 1
+            ) {
+                break
             }
 
-            matchedWords >= maxOf(
-                1,
-                minOf(2, words.size)
-            )
+            productBlock.add(line)
+
+            if (isPriceLine(line)) {
+                priceFound = true
+                cursor++
+                break
+            }
+
+            cursor++
         }
 
-        if (matchingLines.isEmpty()) {
+        if (!priceFound) {
             addLog(
-                "⚠️ OCR لم يطابق: " +
-                    deal.originalName
+                "⚠️ OCR: لم يتم العثور على سعر بعد: " +
+                    firstLine
             )
+
+            index++
             continue
         }
 
-        val matchedIndex = lines.indexOf(
-            matchingLines.first()
-        )
+        val nameParts = productBlock
+            .filter {
+                looksLikeProductLine(it)
+            }
 
-        val startIndex =
-            maxOf(0, matchedIndex - 1)
+        val productName =
+            nameParts
+                .joinToString(" ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
 
-        val endIndex =
-            minOf(lines.size, matchedIndex + 6)
-
-        val productBlock = lines
-            .subList(startIndex, endIndex)
-            .joinToString(" ")
-
-        val numbers = extractOcrNumbers(productBlock)
-
-        if (numbers.isEmpty()) {
-            addLog(
-                "⚠️ OCR لم يجد أسعارًا: " +
-                    deal.originalName
-            )
+        if (productName.length < 3) {
+            index = cursor
             continue
         }
 
-        val newPrice = numbers.minOrNull()
-        val oldPrice = numbers
-            .filter { it > (newPrice ?: 0.0) }
-            .maxOrNull()
+        val values = productBlock
+            .flatMap {
+                extractOcrNumbers(it)
+            }
 
-        if (newPrice == null) continue
+        val prices = choosePrices(values)
 
-        val discountFromDeal =
-            Regex("بخصم\\s*(\\d+)%")
-                .find(deal.dealText)
-                ?.groupValues
-                ?.getOrNull(1)
-                ?.toIntOrNull()
+        val oldPrice = prices.first
+        val newPrice = prices.second
 
-        val calculatedDiscount =
+        if (newPrice == null) {
+            addLog(
+                "⚠️ OCR: السعر غير صالح للمنتج: " +
+                    productName
+            )
+
+            index = cursor
+            continue
+        }
+
+        val discount =
             calculateDiscount(
                 oldPrice,
                 newPrice
             )
 
-        val discount =
-            discountFromDeal ?: calculatedDiscount
-
-        val description =
-            "${deal.originalName} ب " +
-                "${formatPrice(newPrice)} جنيه" +
-                (discount?.let {
-                    " بخصم $it%"
-                } ?: "")
-
-        products.add(
-            OcrCartProduct(
-                name = deal.originalName,
-                price = formatPrice(newPrice),
-                oldPrice = oldPrice?.let {
-                    formatPrice(it)
-                },
-                discount = discount
-            )
+        val product = OcrCartProduct(
+            name = productName,
+            price = formatPrice(newPrice),
+            oldPrice = oldPrice?.let {
+                formatPrice(it)
+            },
+            discount = discount
         )
+
+        products.add(product)
 
         addLog(
-            "✅ OCR product: $description"
+            "✅ OCR product: " +
+                product.toDealText()
         )
+
+        index = cursor
     }
 
-    return products.distinctBy {
-        normalizeProductKey(it.name)
-    }
+    val finalProducts = products
+        .distinctBy {
+            normalizeProductKey(it.name)
+        }
+
+    addLog(
+        "📊 OCR parser result: " +
+            "${finalProducts.size} products"
+    )
+
+    return finalProducts
 }
     
     private fun normalizeProductKey(text: String): String {
