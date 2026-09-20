@@ -856,18 +856,18 @@ class DealScannerService : AccessibilityService() {
     }
 
     private fun normalizeForCartMatch(text: String): String {
-        return text
-            .lowercase(java.util.Locale.ROOT)
-            .replace("\n", " ")
-            .replace("أ", "ا")
-            .replace("إ", "ا")
-            .replace("آ", "ا")
-            .replace("ى", "ي")
-            .replace("ة", "ه")
-            .replace(Regex("""[^\\p{L}\\p{N}\\s]"""), " ")
-            .replace(Regex("""\\s+"""), " ")
-            .trim()
-    }
+    return text
+        .lowercase(java.util.Locale.ROOT)
+        .replace("\n", " ")
+        .replace("أ", "ا")
+        .replace("إ", "ا")
+        .replace("آ", "ا")
+        .replace("ى", "ي")
+        .replace("ة", "ه")
+        .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
 
     private fun findDealPositionInCart(deal: DealData, visibleNodes: List<NodeData>): PositionedDeal? {
         val words = normalizeForCartMatch(deal.originalName)
