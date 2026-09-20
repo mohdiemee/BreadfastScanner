@@ -27,7 +27,7 @@ data class DealData(val originalName: String, val dealText: String, var isAssign
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
 private data class RabbitProductInfo(val name: String, val unit: String?, val salePrice: String?)
 private data class PositionedDeal(val deal: DealData, val top: Int, val score: Int)
-private data class CartProduct(val textDescription: String, val top: Int)
+private data class CartProduct(val textDescription: String, val topY: Int, val bottomY: Int)
 
 class DealScannerService : AccessibilityService() {
 
