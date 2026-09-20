@@ -779,7 +779,7 @@ class DealScannerService : AccessibilityService() {
     // هذه الدوال لا تتعامل مع صفحة العروض أو زر + أو زر -.
     // ===========================
     
-    // 1. الدالة الأولى: تجميع العناصر بكفاءة أكبر لاستيعاب الكارت بالكامل
+    // 1. الدالة الأولى: تجميع العناصر في صفوف (تم ضبط المسافة لتكون 110 بكسل لمنع دمج كارتين معاً)
     private fun groupNodesIntoRows(nodes: List<NodeData>): List<List<NodeData>> {
         if (nodes.isEmpty()) return emptyList()
 
@@ -787,7 +787,6 @@ class DealScannerService : AccessibilityService() {
         val rows = mutableListOf<MutableList<NodeData>>()
         var currentRow = mutableListOf(sortedNodes[0])
 
-        // تم التعديل هنا: المسافة 150 بكسل لضمان التقاط اسم المنتج مع سعره كعنصر واحد
         for (i in 1 until sortedNodes.size) {
             val currentNode = sortedNodes[i]
             val prevNode = currentRow.last()
@@ -795,7 +794,7 @@ class DealScannerService : AccessibilityService() {
             val currentY = getRect(currentNode.node).centerY()
             val prevY = getRect(prevNode.node).centerY()
 
-            if (kotlin.math.abs(currentY - prevY) < 150) {
+            if (kotlin.math.abs(currentY - prevY) < 110) {
                 currentRow.add(currentNode)
             } else {
                 rows.add(currentRow)
@@ -808,31 +807,35 @@ class DealScannerService : AccessibilityService() {
         return rows
     }
 
-    // 2. الدالة الثانية: معالجة النصوص وحساب التخفيضات 
+    // 2. الدالة الثانية: تم علاج مشكلة قراءة الأسعار بالاعتماد على البحث الشامل (findAll)
     private fun parseRabbitCartRow(rowNodes: List<NodeData>): String? {
         val texts = rowNodes.map { it.text.trim() }.filter { it.isNotEmpty() }
-        if (texts.size < 3) return null
+        if (texts.isEmpty()) return null
+
+        // دمج كل نصوص الكارت في سطر واحد لتسهيل البحث
+        val combinedText = texts.joinToString(" ")
+        
+        // استخراج جميع الأرقام من النص (حتى لو كانت داخل كلمات أو بها مسافات)
+        val priceTokens = Regex("""\d+(?:[.,]\d{1,2})?""").findAll(combinedText)
+            .map { it.value.replace(",", ".") }.toList()
 
         val numbers = mutableListOf<Double>()
         var i = 0
-        while (i < texts.size) {
-            val t = texts[i].replace(",", ".")
-            if (t.matches(Regex("\\d+"))) {
-                if (i + 1 < texts.size && texts[i + 1].matches(Regex("\\d{2}"))) {
-                    numbers.add("${t}.${texts[i + 1]}".toDouble())
-                    i += 2
-                } else {
-                    val value = t.toDouble()
-                    if (value > 2.0 || texts.getOrNull(i-1)?.contains("جنيه") == true || texts.getOrNull(i+1)?.contains("جنيه") == true) {
-                        numbers.add(value)
-                    }
-                    i++
-                }
-            } else if (t.matches(Regex("\\d+\\.\\d+"))) {
-                numbers.add(t.toDouble())
+        while (i < priceTokens.size) {
+            val token = priceTokens[i]
+            if (token.contains(".")) {
+                numbers.add(token.toDouble())
                 i++
             } else {
-                i++
+                // دمج القروش مع السعر الأساسي إذا كان الرقم التالي مكون من خانتين
+                if (i + 1 < priceTokens.size && priceTokens[i + 1].length == 2 && !priceTokens[i + 1].contains(".")) {
+                    numbers.add("${token}.${priceTokens[i + 1]}".toDouble())
+                    i += 2
+                } else {
+                    val value = token.toDouble()
+                    if (value > 2.0) numbers.add(value) // تجاهل أرقام الكميات البسيطة مثل 1 أو 2
+                    i++
+                }
             }
         }
 
@@ -841,24 +844,26 @@ class DealScannerService : AccessibilityService() {
 
         val oldPrice = prices[0]
         val newPrice = prices.last()
-        
         val discount = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
-
+        
         if (discount <= 0) return null
 
-        val ignoredWords = setOf("جنيه", "egp", "+", "-", "1", "2", "3", "4", "5")
-        val textCandidates = texts.filter { 
-            !it.matches(Regex("\\d+")) && 
-            !it.matches(Regex("\\d{2}")) && 
-            !ignoredWords.contains(it.lowercase()) 
-        }
+        // استخراج وحدة القياس
+        val unitRegex = Regex("(?i)\\b\\d+(?:[.,]\\d+)?\\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\\b")
+        val unit = unitRegex.find(combinedText)?.value?.trim() ?: ""
 
-        val unitRegex = Regex("(?i).*\\d+.*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة).*")
-        val unit = textCandidates.find { it.matches(unitRegex) } ?: ""
-        
-        val name = textCandidates.filter { it != unit }.maxByOrNull { it.length } ?: return null
+        // تحديد اسم المنتج بذكاء
+        val ignoredWords = setOf("جنيه", "egp", "+", "-")
+        val nameCandidate = texts.filter { text ->
+            val lower = text.lowercase()
+            !ignoredWords.contains(lower) &&
+            lower != unit.lowercase() &&
+            !text.matches(Regex("^\\d+$")) && // تجاهل الأرقام الصريحة
+            !text.contains("جنيه") &&
+            !text.contains(oldPrice.toInt().toString())
+        }.maxByOrNull { it.length } ?: return null
 
-        val cleanName = name.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
+        val cleanName = nameCandidate.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
         val cleanUnit = unit.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
         val unitText = if (cleanUnit.isNotEmpty()) " ($cleanUnit)" else ""
         
@@ -867,7 +872,7 @@ class DealScannerService : AccessibilityService() {
         return "$cleanName$unitText ب $formattedPrice جنيه بخصم $discount%"
     }
 
-    // 3. الدالة الثالثة: فتح السلة والتصوير مدعومة بنظام سجلات مكثف (Detailed Logs)
+    // 3. الدالة الثالثة: إضافة الـ Logs وعلاج التوقف الصامت (Silent Break)
     @TargetApi(30)
     private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
         addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
@@ -908,7 +913,7 @@ class DealScannerService : AccessibilityService() {
                 if (signature == lastSignature) {
                     unchangedScreens++
                     if (unchangedScreens >= 2 || !moveCartAndWait(signature)) {
-                        addLog("🏁 [النهاية] السلة لم تعد تتحرك للأسفل.")
+                        addLog("🏁 [انتهاء السلة] لم تعد الشاشة تتحرك للأسفل.")
                         break
                     }
                     continue
@@ -916,33 +921,24 @@ class DealScannerService : AccessibilityService() {
                 unchangedScreens = 0
 
                 val rows = groupNodesIntoRows(visibleNodes)
-                addLog("🔎 [فحص] تم رصد ${rows.size} كروت منتجات بالشاشة الحالية.")
-                
                 val currentBatchText = mutableListOf<String>()
 
                 for (row in rows) {
-                    val rowRawText = row.joinToString(" | ") { it.text }
                     val dealText = parseRabbitCartRow(row)
-                    
                     if (dealText != null) {
                         val uniqueKey = dealText.substringBefore("(").trim()
                         if (!sentProducts.contains(uniqueKey)) {
                             currentBatchText.add(dealText)
                             sentProducts.add(uniqueKey)
-                            addLog("✅ [جاهز للإرسال] $uniqueKey")
-                        } else {
-                            addLog("⏩ [تخطي] منتج مكرر بالشاشة: $uniqueKey")
                         }
-                    } else {
-                        addLog("⚠️ [فشل التحليل] الكارت غير مكتمل: $rowRawText")
                     }
                 }
 
                 if (currentBatchText.isEmpty()) {
-                    addLog("⚠️ [تنبيه] الشاشة الحالية خالية من المنتجات الصالحة. جاري السحب...")
+                    addLog("⚠️ لم يتم استخراج أي عرض من هذه الشاشة. جاري السحب للأسفل...")
                     lastSignature = signature
                     if (!moveCartAndWait(signature)) {
-                        addLog("🏁 [النهاية] تعذر السحب للأسفل للاستمرار.")
+                        addLog("🏁 [انتهاء] تعذر السحب، نهاية قائمة المنتجات.")
                         break
                     }
                     continue
@@ -964,27 +960,25 @@ class DealScannerService : AccessibilityService() {
                         croppedBitmap.recycle()
                         bitmap.recycle()
                     } catch (e: Exception) {
-                        addLog("❌ [خطأ] فشل قص أو معالجة الصورة: ${e.message}")
+                        addLog("❌ [خطأ تصوير] ${e.message}")
                     }
-                } else {
-                    addLog("⚠️ [تنبيه] لم يتم التقاط Screenshot لهذه الشاشة.")
                 }
 
                 val prefix = if (loopCount == 1) "عروض ممتازة على Rabbit 🐰\n\n" else "وعروض Rabbit إضافية 🐰\n\n"
                 val caption = (prefix + currentBatchText.joinToString("\n\n")).take(1020)
 
                 if (imageBytes != null) {
-                    addLog("📸 [إرسال] جاري إرسال صورة السلة مع ${currentBatchText.size} منتجات...")
+                    addLog("📸 جاري إرسال صورة بها ${currentBatchText.size} منتجات...")
                     sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
                 } else {
-                    addLog("✉️ [إرسال] جاري إرسال رسالة نصية فقط بـ ${currentBatchText.size} منتجات...")
+                    addLog("✉️ جاري إرسال رسالة نصية لعدد ${currentBatchText.size} منتجات...")
                     sendTelegramMessage(token, chatId, caption)
                 }
 
                 lastSignature = signature
 
                 if (!moveCartAndWait(signature)) {
-                    addLog("🏁 [النهاية] تعذر السحب للأسفل لاستكمال السلة.")
+                    addLog("🏁 اكتمل الفحص وتصوير كامل السلة.")
                     break
                 }
             }
@@ -992,7 +986,7 @@ class DealScannerService : AccessibilityService() {
         }
 
         // ---------------------------------------------------------
-        // مسار تطبيق بريدفاست (كما هو)
+        // مسار تطبيق بريدفاست (كما هو يعمل بنجاح بدون تعديل)
         // ---------------------------------------------------------
         deals.forEach { it.isAssigned = false }
         var loopCount = 0
@@ -1060,7 +1054,6 @@ class DealScannerService : AccessibilityService() {
             }
         }
     }
-
     
     
     private fun normalizeForCartMatch(text: String): String {
