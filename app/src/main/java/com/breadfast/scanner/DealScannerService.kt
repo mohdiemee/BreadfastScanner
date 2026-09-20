@@ -1051,11 +1051,9 @@ private fun openCartAndSendReport(
                     val ocrText =
                         extractOcrText(bitmap)
 
-                    ocrProducts =
-                        parseOcrCartProducts(
-                            ocrText,
-                            deals
-                        )
+                    ocrProducts = parseOcrCartProducts(
+    ocrText
+)
 
                     addLog(
                         "📊 OCR products=" +
