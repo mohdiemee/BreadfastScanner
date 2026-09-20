@@ -472,7 +472,6 @@ class DealScannerService : AccessibilityService() {
         
         for (current in nodesList) {
             val badgeText = current.text.trim()
-            // تعبير مرن يقرأ الخصم في اللغتين مهما كان موضع علامة السالب أو النسبة
             val discountMatch = Regex("""[-]?\s*(\d{1,2})\s*[%٪]-?""").find(badgeText) ?: continue
             val discountPercent = discountMatch.groupValues[1].toIntOrNull() ?: continue
             if (discountPercent < minDiscount) continue
@@ -497,17 +496,11 @@ class DealScannerService : AccessibilityService() {
             if (attempts >= 3) continue
 
             var plusClicked = false
+            
+            // البوت سيعتمد حصرياً على الذكاء الهندسي الآمن ولن ينقر نقراً أعمى أبداً
             val addButton = findRabbitAddButton(productCard)
             if (addButton != null) {
                 plusClicked = clickNodeCenter(addButton)
-            }
-            
-            if (!plusClicked) {
-                val rect = getRect(productCard)
-                val fallbackX = if (isRabbitInArabic()) rect.left + (rect.width() * 0.20f) else rect.left + (rect.width() * 0.80f)
-                val fallbackY = rect.top + (rect.height() * 0.43f)
-                plusClicked = tapScreenPoint(fallbackX, fallbackY)
-                if (plusClicked) Thread.sleep(800)
             }
 
             if (!plusClicked) {
@@ -544,6 +537,7 @@ class DealScannerService : AccessibilityService() {
         return false
     }
 
+    
     // ==========================================
     // منطق تطبيق بريدفاست القديم (Breadfast Automation)
     // ==========================================
