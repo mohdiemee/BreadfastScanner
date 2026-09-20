@@ -86,6 +86,8 @@ class ArabicOcrEngine(
 
             val words = mutableListOf<OcrWord>()
 
+            var sequence = 0
+
             iterator.begin()
 
             do {
@@ -100,29 +102,22 @@ class ArabicOcrEngine(
                 val confidence =
                     iterator.confidence(level)
 
-                val bounds = IntArray(4)
-
-                val hasBounds =
-                    iterator.boundingBox(
-                        level,
-                        bounds
-                    )
-
                 if (
                     rawText.isNotBlank() &&
-                    hasBounds &&
                     confidence >= 15f
                 ) {
                     words.add(
                         OcrWord(
                             text = rawText,
-                            left = bounds[0],
-                            top = bounds[1],
-                            right = bounds[2],
-                            bottom = bounds[3],
+                            left = 0,
+                            top = sequence * 40,
+                            right = 0,
+                            bottom = (sequence * 40) + 30,
                             confidence = confidence
                         )
                     )
+
+                    sequence++
                 }
             } while (
                 iterator.next(level)
