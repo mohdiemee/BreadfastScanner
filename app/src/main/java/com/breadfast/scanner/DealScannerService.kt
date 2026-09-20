@@ -305,6 +305,17 @@ private fun parseOcrCartProducts(
     val lines = ocrText
         .lines()
         .map { cleanOcrLine(it) }
+        .map { line ->
+            line
+                .replace("\u200E", "")
+                .replace("\u200F", "")
+                .replace("\u202A", "")
+                .replace("\u202B", "")
+                .replace("\u202C", "")
+                .replace(Regex("""[|=_<>~`]"""), " ")
+                .replace(Regex("""\s+"""), " ")
+                .trim()
+        }
         .filter { it.isNotBlank() }
 
     if (lines.isEmpty()) {
@@ -317,21 +328,31 @@ private fun parseOcrCartProducts(
     val ignoredPhrases = listOf(
         "اختيار جامد",
         "وفرت",
-        "جنيه",
+        "يلا ندفع",
         "يللا ندفع",
         "توصيل ببلاش",
-        "واو ليك"
+        "واو ليك",
+        "فضي الكيس",
+        "السلة",
+        "الكيس",
+        "جنيه",
+        "egp"
     )
 
-    fun isIgnoredLine(line: String): Boolean {
-        val normalized = normalizeOcrText(line)
-            .replace(" ", "")
+    fun compact(text: String): String {
+        return normalizeOcrText(text)
+            .lowercase(java.util.Locale.ROOT)
+            .replace(Regex("""[\s+\-|=_<>~`]+"""), "")
+            .trim()
+    }
 
-        return normalized.isBlank() ||
-            ignoredPhrases.any {
-                normalized.contains(
-                    it.replace(" ", ""),
-                    ignoreCase = true
+    fun isIgnoredLine(line: String): Boolean {
+        val value = compact(line)
+
+        return value.isBlank() ||
+            ignoredPhrases.any { phrase ->
+                value.contains(
+                    compact(phrase)
                 )
             }
     }
@@ -343,18 +364,39 @@ private fun parseOcrCartProducts(
     }
 
     fun isUnitLine(line: String): Boolean {
-        return normalizeOcrText(line).matches(
+        val normalized = normalizeOcrText(line)
+
+        return normalized.matches(
             Regex(
-                "(?i).*\\b(" +
-                    "قطعة|قطعه|جم|كجم|مل|لتر|" +
-                    "علكة|pcs?|pc|g|gm|kg|ml|l|ق" +
-                    ")\\b.*"
+                """(?i)^\s*\d*(?:[.,]\d+)?\s*(""" +
+                    """قطعة|قطعه|جم|كجم|مل|لتر|""" +
+                    """علكة|pcs?|pc|g|gm|kg|ml|l|ق""" +
+                    """)\s*$"""
             )
         )
     }
 
+    fun cleanProductNamePart(line: String): String {
+        return normalizeOcrText(line)
+            .replace(
+                Regex(
+                    """(?i)\b(add|favorite|cart|clear|egp)\b"""
+                ),
+                " "
+            )
+            .replace(
+                Regex(
+                    """(أضف|اضف|مفضلة|السلة|فضي الكيس|يلا ندفع|يللا ندفع)"""
+                ),
+                " "
+            )
+            .replace(Regex("""[+|=_<>~`]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+    }
+
     fun looksLikeProductLine(line: String): Boolean {
-        val normalized = normalizeOcrText(line)
+        val normalized = cleanProductNamePart(line)
 
         if (normalized.length < 3) {
             return false
@@ -374,12 +416,16 @@ private fun parseOcrCartProducts(
 
         if (
             normalized.contains("جنيه") ||
-                normalized.contains("EGP", ignoreCase = true)
+            normalized.contains("EGP", ignoreCase = true)
         ) {
             return false
         }
 
-        return normalized.any { it.isLetter() }
+        val lettersCount = normalized.count {
+            it.isLetter()
+        }
+
+        return lettersCount >= 3
     }
 
     fun isPriceLine(line: String): Boolean {
@@ -387,15 +433,15 @@ private fun parseOcrCartProducts(
 
         if (
             normalized.contains("جنيه") ||
-                normalized.contains("EGP", ignoreCase = true)
+            normalized.contains("EGP", ignoreCase = true)
         ) {
             return true
         }
 
-        val values = extractOcrNumbers(normalized)
+        val numbers = extractOcrNumbers(normalized)
 
-        return values.any {
-            it >= 2.0
+        return numbers.any { value ->
+            value >= 3.0 && value <= 5000.0
         }
     }
 
@@ -403,26 +449,26 @@ private fun parseOcrCartProducts(
         values: List<Double>
     ): Pair<Double?, Double?> {
         val candidates = values
-            .filter {
-                it >= 2.0 &&
-                    it <= 10000.0
+            .filter { value ->
+                value >= 3.0 && value <= 5000.0
             }
             .distinct()
+            .sorted()
 
         if (candidates.isEmpty()) {
             return null to null
         }
 
-        val newPrice =
-            candidates.minOrNull()
+        if (candidates.size == 1) {
+            return null to candidates.first()
+        }
 
-        val oldPrice =
-            candidates
-                .filter {
-                    newPrice != null &&
-                        it > newPrice
-                }
-                .maxOrNull()
+        val newPrice = candidates.first()
+
+        val oldPrice = candidates
+            .firstOrNull { value ->
+                value > newPrice
+            }
 
         return oldPrice to newPrice
     }
@@ -437,9 +483,7 @@ private fun parseOcrCartProducts(
             continue
         }
 
-        val productBlock =
-            mutableListOf<String>()
-
+        val productBlock = mutableListOf<String>()
         productBlock.add(firstLine)
 
         var cursor = index + 1
@@ -447,13 +491,13 @@ private fun parseOcrCartProducts(
 
         while (
             cursor < lines.size &&
-                cursor <= index + 8
+            cursor <= index + 7
         ) {
             val line = lines[cursor]
 
             if (
                 looksLikeProductLine(line) &&
-                    productBlock.size > 1
+                productBlock.size > 1
             ) {
                 break
             }
@@ -479,29 +523,46 @@ private fun parseOcrCartProducts(
             continue
         }
 
-        val nameParts = productBlock
-            .filter {
-                looksLikeProductLine(it)
+        val productName = productBlock
+            .filter { line ->
+                looksLikeProductLine(line)
             }
+            .map { line ->
+                cleanProductNamePart(line)
+            }
+            .joinToString(" ")
+            .replace(
+                Regex(
+                    """(?<![\p{L}\p{N}])[\d+\-]+(?![\p{L}\p{N}])"""
+                ),
+                " "
+            )
+            .replace(Regex("""\s+"""), " ")
+            .trim()
 
-        val productName =
-            nameParts
-                .joinToString(" ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
+        val lettersCount = productName.count {
+            it.isLetter()
+        }
 
-        if (productName.length < 3) {
+        if (
+            productName.length < 5 ||
+            lettersCount < 4 ||
+            isIgnoredLine(productName)
+        ) {
             index = cursor
             continue
         }
 
-        val values = productBlock
-            .flatMap {
-                extractOcrNumbers(it)
+        val priceLines = productBlock.filter { line ->
+            isPriceLine(line)
+        }
+
+        val values = priceLines
+            .flatMap { line ->
+                extractOcrNumbers(line)
             }
 
         val prices = choosePrices(values)
-
         val oldPrice = prices.first
         val newPrice = prices.second
 
@@ -515,17 +576,18 @@ private fun parseOcrCartProducts(
             continue
         }
 
-        val discount =
-            calculateDiscount(
-                oldPrice,
-                newPrice
-            )
+        val discount = calculateDiscount(
+            oldPrice,
+            newPrice
+        )?.takeIf { value ->
+            value in 1..95
+        }
 
         val product = OcrCartProduct(
             name = productName,
             price = formatPrice(newPrice),
-            oldPrice = oldPrice?.let {
-                formatPrice(it)
+            oldPrice = oldPrice?.let { price ->
+                formatPrice(price)
             },
             discount = discount
         )
@@ -541,8 +603,8 @@ private fun parseOcrCartProducts(
     }
 
     val finalProducts = products
-        .distinctBy {
-            normalizeProductKey(it.name)
+        .distinctBy { product ->
+            normalizeProductKey(product.name)
         }
 
     addLog(
@@ -945,10 +1007,10 @@ private fun openCartAndSendReport(
         val signature = cartScreenSignature(visibleNodes)
 
         addLog(
-            "🔍 Rabbit Cart: دورة=$loopCount, " +
+            "🔍 Rabbit Cart OCR: دورة=$loopCount, " +
                 "nodes=${visibleNodes.size}, " +
                 "signatureLength=${signature.length}, " +
-                "sent=${sentProducts.size}/${deals.size}"
+                "sent=${sentProducts.size}"
         )
 
         if (signature.isBlank()) {
@@ -988,164 +1050,130 @@ private fun openCartAndSendReport(
             unchangedScreens = 0
         }
 
-        val parsedProducts = try {
-            parseRabbitCartProducts(
-                visibleNodes,
-                deals
-            )
-        } catch (e: Exception) {
-            addLog(
-                "❌ خطأ في تحليل السلة: " +
-                    "${e.javaClass.simpleName}: " +
-                    "${e.message}"
-            )
-            emptyList()
-        }
-
-        addLog(
-            "📦 parsedProducts=${parsedProducts.size}, " +
-                "sentProducts=${sentProducts.size}"
-        )
-
         if (screenChanged) {
-            val parsedNotSentProducts =
-                parsedProducts.filter { product ->
-                    !sentProducts.contains(
-                        uniqueProductKey(
-                            product.textDescription
-                        )
-                    )
-                }
-
-            val fallbackDeals = deals
-                .filter { deal ->
-                    !sentProducts.contains(
-                        normalizeProductKey(
-                            deal.originalName
-                        )
-                    )
-                }
-                .take(5)
-
-            if (
-                parsedNotSentProducts.isEmpty() &&
-                    fallbackDeals.isEmpty()
-            ) {
-                addLog(
-                    "✅ لا توجد منتجات متبقية للإرسال."
-                )
-                break
-            }
-
             addLog(
                 "📷 التقاط Screenshot للشاشة الحالية..."
             )
 
             val bitmap = takeScreenshotSync()
 
-            var ocrProducts =
-                emptyList<OcrCartProduct>()
+            if (bitmap == null) {
+                addLog(
+                    "❌ Screenshot رجع null؛ " +
+                        "لن يتم إرسال هذه الدفعة."
+                )
 
-            if (bitmap != null) {
-                try {
-                    val ocrText =
-                        extractOcrText(bitmap)
+                lastSignature = signature
 
-                    ocrProducts = parseOcrCartProducts(
-    ocrText
-)
-
-                    addLog(
-                        "📊 OCR products=" +
-                            "${ocrProducts.size}"
+                val moved = try {
+                    smartScrollRabbitCart(
+                        parsedProducts = emptyList(),
+                        previousSignature = signature,
+                        sentProducts = sentProducts
                     )
                 } catch (e: Exception) {
                     addLog(
-                        "❌ خطأ OCR: " +
+                        "❌ خطأ أثناء تمرير السلة: " +
                             "${e.javaClass.simpleName}: " +
                             "${e.message}"
                     )
+                    false
                 }
-            } else {
+
+                if (!moved) {
+                    addLog(
+                        "🏁 تعذر تحريك السلة؛ " +
+                            "غالبًا تم الوصول إلى نهايتها."
+                    )
+                    break
+                }
+
+                Thread.sleep(1200)
+                continue
+            }
+
+            var ocrProducts = emptyList<OcrCartProduct>()
+
+            try {
+                val ocrText = extractOcrText(bitmap)
+
+                ocrProducts = parseOcrCartProducts(
+                    ocrText = ocrText
+                )
+
                 addLog(
-                    "⚠️ Screenshot رجع null قبل OCR."
+                    "📊 OCR products=" +
+                        "${ocrProducts.size}"
+                )
+            } catch (e: Exception) {
+                addLog(
+                    "❌ خطأ OCR: " +
+                        "${e.javaClass.simpleName}: " +
+                        "${e.message}"
                 )
             }
 
-            val validOcrProducts =
-                ocrProducts.filter { ocrProduct ->
-                    deals.any { deal ->
-                        normalizeProductKey(
-                            deal.originalName
-                        ) == normalizeProductKey(
-                            ocrProduct.name
+            val ocrBatch = ocrProducts
+                .filter { product ->
+                    val price = product.price
+                        .replace(",", ".")
+                        .toDoubleOrNull()
+
+                    val name = normalizeProductKey(
+                        product.name
+                    )
+
+                    name.length >= 5 &&
+                        name.count { it.isLetter() } >= 4 &&
+                        price != null &&
+                        price >= 1.0 &&
+                        price <= 5000.0
+                }
+                .filter { product ->
+                    val productKey = buildString {
+                        append(
+                            normalizeProductKey(
+                                product.name
+                            )
                         )
+                        append("|")
+                        append(product.price)
+                        append("|")
+                        append(product.oldPrice ?: "")
                     }
+
+                    !sentProducts.contains(productKey)
                 }
+                .take(5)
 
-            val batchText: List<String> =
-                when {
-                    validOcrProducts.isNotEmpty() -> {
-                        validOcrProducts
-                            .take(5)
-                            .map {
-                                it.toDealText()
-                            }
-                    }
-
-                    parsedNotSentProducts.isNotEmpty() -> {
-                        parsedNotSentProducts
-                            .take(5)
-                            .map {
-                                it.textDescription
-                            }
-                    }
-
-                    else -> {
-                        fallbackDeals
-                            .map {
-                                it.dealText
-                            }
-                    }
-                }
-
-            if (batchText.isEmpty()) {
+            if (ocrBatch.isEmpty()) {
                 addLog(
-                    "⚠️ لم يتم إنشاء نص للدفعة."
+                    "⚠️ Rabbit OCR: لا توجد منتجات جديدة " +
+                        "صالحة في الشاشة الحالية."
+                )
+            } else {
+                val captionPrefix =
+                    if (sentProducts.isEmpty()) {
+                        "عروض Rabbit 🐰\n\n"
+                    } else {
+                        "وعروض Rabbit إضافية 🐰\n\n"
+                    }
+
+                val caption = (
+                    captionPrefix +
+                        ocrBatch.joinToString("\n\n") {
+                            it.toDealText()
+                        }
+                    ).take(1020)
+
+                addLog(
+                    "📝 تجهيز دفعة OCR: " +
+                        "batch=${ocrBatch.size}, " +
+                        "ocr=${ocrProducts.size}"
                 )
 
-                if (
-                    bitmap != null &&
-                        !bitmap.isRecycled
-                ) {
-                    bitmap.recycle()
-                }
+                var imageBytes: ByteArray? = null
 
-                break
-            }
-
-            val captionPrefix =
-                if (sentProducts.isEmpty()) {
-                    "عروض Rabbit 🐰\n\n"
-                } else {
-                    "وعروض Rabbit إضافية 🐰\n\n"
-                }
-
-            val caption = (
-                captionPrefix +
-                    batchText.joinToString("\n\n")
-                ).take(1020)
-
-            addLog(
-                "📝 تجهيز الدفعة: " +
-                    "batch=${batchText.size}, " +
-                    "parsed=${parsedProducts.size}, " +
-                    "ocr=${validOcrProducts.size}"
-            )
-
-            var imageBytes: ByteArray? = null
-
-            if (bitmap != null) {
                 try {
                     addLog(
                         "📐 Screenshot: " +
@@ -1206,113 +1234,87 @@ private fun openCartAndSendReport(
                             "${e.javaClass.simpleName}: " +
                             "${e.message}"
                     )
-                } finally {
+                }
+
+                val sentSuccessfully =
+                    try {
+                        if (
+                            imageBytes != null &&
+                            imageBytes.isNotEmpty()
+                        ) {
+                            addLog(
+                                "📤 إرسال صورة Telegram..."
+                            )
+
+                            sendTelegramPhotoMultipart(
+                                token = token,
+                                chatId = chatId,
+                                imageBytes = imageBytes,
+                                caption = caption
+                            )
+                        } else {
+                            addLog(
+                                "📤 لا توجد صورة؛ " +
+                                    "إرسال النص كبديل..."
+                            )
+
+                            sendTelegramMessage(
+                                token = token,
+                                chatId = chatId,
+                                text = caption
+                            )
+                        }
+                    } catch (e: Exception) {
+                        addLog(
+                            "❌ خطأ Telegram: " +
+                                "${e.javaClass.simpleName}: " +
+                                "${e.message}"
+                        )
+                        false
+                    }
+
+                if (!sentSuccessfully) {
                     if (!bitmap.isRecycled) {
                         bitmap.recycle()
                     }
-                }
-            }
 
-            val sentSuccessfully =
-                try {
-                    if (
-                        imageBytes != null &&
-                            imageBytes.isNotEmpty()
-                    ) {
-                        addLog(
-                            "📤 إرسال صورة Telegram..."
-                        )
-
-                        sendTelegramPhotoMultipart(
-                            token = token,
-                            chatId = chatId,
-                            imageBytes = imageBytes,
-                            caption = caption
-                        )
-                    } else {
-                        addLog(
-                            "📤 لا توجد صورة؛ " +
-                                "إرسال النص كبديل..."
-                        )
-
-                        sendTelegramMessage(
-                            token = token,
-                            chatId = chatId,
-                            text = caption
-                        )
-                    }
-                } catch (e: Exception) {
                     addLog(
-                        "❌ خطأ Telegram: " +
-                            "${e.javaClass.simpleName}: " +
-                            "${e.message}"
+                        "❌ فشل إرسال الدفعة؛ " +
+                            "إيقاف التقرير لمنع التكرار."
                     )
-                    false
+                    break
                 }
 
-            if (!sentSuccessfully) {
-                addLog(
-                    "❌ فشل إرسال الدفعة؛ " +
-                        "إيقاف التقرير لمنع التكرار."
-                )
-                break
-            }
-
-            if (validOcrProducts.isNotEmpty()) {
-                validOcrProducts
-                    .take(5)
-                    .forEach { product ->
-                        sentProducts.add(
+                ocrBatch.forEach { product ->
+                    val productKey = buildString {
+                        append(
                             normalizeProductKey(
                                 product.name
                             )
                         )
+                        append("|")
+                        append(product.price)
+                        append("|")
+                        append(product.oldPrice ?: "")
                     }
+
+                    sentProducts.add(productKey)
+                }
 
                 addLog(
-                    "✅ تم اعتماد منتجات OCR: " +
-                        "${validOcrProducts.size}"
+                    "✅ تم إرسال دفعة OCR بنجاح. " +
+                        "الإجمالي=${sentProducts.size}"
                 )
-            } else if (
-                parsedNotSentProducts.isNotEmpty()
-            ) {
-                parsedNotSentProducts
-                    .take(5)
-                    .forEach { product ->
-                        sentProducts.add(
-                            uniqueProductKey(
-                                product.textDescription
-                            )
-                        )
-                    }
-            } else {
-                fallbackDeals.forEach { deal ->
-                    sentProducts.add(
-                        normalizeProductKey(
-                            deal.originalName
-                        )
-                    )
-                }
             }
 
-            addLog(
-                "✅ تم إرسال الدفعة بنجاح. " +
-                    "الإجمالي=${sentProducts.size}/" +
-                    "${deals.size}"
-            )
+            if (!bitmap.isRecycled) {
+                bitmap.recycle()
+            }
         } else {
             addLog(
                 "⚠️ الشاشة لم تتغير؛ " +
                     "لن يتم إرسال Screenshot مكرر."
             )
-        }
-
-        if (sentProducts.size >= deals.size) {
-            addLog(
-                "✅ تم إرسال جميع المنتجات: " +
-                    "${sentProducts.size}/${deals.size}"
-            )
-            break
         }
 
         lastSignature = signature
@@ -1324,7 +1326,7 @@ private fun openCartAndSendReport(
 
         val moved = try {
             smartScrollRabbitCart(
-                parsedProducts = parsedProducts,
+                parsedProducts = emptyList(),
                 previousSignature = signature,
                 sentProducts = sentProducts
             )
@@ -1332,7 +1334,7 @@ private fun openCartAndSendReport(
             addLog(
                 "❌ خطأ أثناء تمرير السلة: " +
                     "${e.javaClass.simpleName}: " +
-                    "${e.message}"
+                        "${e.message}"
             )
             false
         }
@@ -1349,8 +1351,8 @@ private fun openCartAndSendReport(
     }
 
     addLog(
-        "📊 نتيجة تقرير Rabbit: " +
-            "${sentProducts.size}/${deals.size} منتجات."
+        "📊 نتيجة تقرير Rabbit OCR: " +
+            "${sentProducts.size} منتجات."
     )
 }
 
