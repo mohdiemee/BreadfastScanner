@@ -27,6 +27,7 @@ data class DealData(val originalName: String, val dealText: String, var isAssign
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
 private data class RabbitProductInfo(val name: String, val unit: String?, val salePrice: String?)
 private data class PositionedDeal(val deal: DealData, val top: Int, val score: Int)
+private data class TextBounds(val text: String, val rect: Rect)
 
 class DealScannerService : AccessibilityService() {
 
@@ -105,14 +106,11 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    // ==========================================
-    // دوال مساعدة خاصة بتنقل واستخراج بيانات رابيت
-    // ==========================================
-    private enum class RabbitBottomTab { CART, PROMOTIONS }
 
     private fun isRabbitInArabic(): Boolean {
         val root = rootInActiveWindow ?: return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
         
+        // فحص فعلي للنصوص الموجودة على الشاشة لتحديد لغة التطبيق الداخلية
         val isArabic = findNodeByText(root, "سوبرماركت") != null || 
                        findNodeByText(root, "الكيس") != null || 
                        findNodeByText(root, "عروض") != null || 
@@ -129,11 +127,19 @@ class DealScannerService : AccessibilityService() {
 
         if (isEnglish) return false
 
+        // الخطة البديلة: الاعتماد على لغة النظام إذا كانت الشاشة خالية من النصوص السابقة
         return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
     }
+    
+    // ==========================================
+    // دوال مساعدة خاصة بتنقل واستخراج بيانات رابيت
+    // ==========================================
+    private enum class RabbitBottomTab { CART, PROMOTIONS }
 
     private fun tapRabbitBottomTab(tab: RabbitBottomTab): Boolean {
         val metrics = resources.displayMetrics
+        
+        // استخدام الدالة الذكية لمعرفة لغة واجهة التطبيق فعلياً بدلاً من لغة الهاتف
         val isRtl = isRabbitInArabic() 
         
         val x = when (tab) {
@@ -184,64 +190,95 @@ class DealScannerService : AccessibilityService() {
         return text.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
     }
 
-    private fun normalizeForCartMatch(text: String): String {
-        return text
-            .lowercase(java.util.Locale.ROOT)
-            .replace("\n", " ")
-            .replace("أ", "ا")
-            .replace("إ", "ا")
-            .replace("آ", "ا")
-            .replace("ى", "ي")
-            .replace("ة", "ه")
-            .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-    }
-
-    private fun extractRabbitSalePriceFromPriceLine(rawText: String): String? {
+    private fun extractRabbitSalePrice(rawText: String): String? {
         val normalized = normalizeRabbitText(rawText)
-        val currencyMatch = Regex("""(?i)\bEGP\b|جنيه""").find(normalized) ?: return null
-        val currencyPosition = currencyMatch.range.first
+        if (!normalized.contains(Regex("""(?i)\bEGP\b|جنيه"""))) return null
         
-        val start = maxOf(0, currencyPosition - 35)
-        val end = minOf(normalized.length, currencyPosition + 45)
-        val priceArea = normalized.substring(start, end)
+        // استخراج جميع الأرقام التي تبدو كأسعار
+        val priceTokens = Regex("""\d+(?:[.,]\d{1,2})?""").findAll(normalized)
+            .map { it.value.replace(",", ".") }.toList()
         
-        val tokens = Regex("""\d+(?:[.,]\d{1,2})?""")
-            .findAll(priceArea)
-            .map { it.value.replace(",", ".") }
-            .toList()
-            
-        if (tokens.isEmpty()) return null
+        if (priceTokens.isEmpty()) return null
         
-        val prices = mutableListOf<Double>()
-        var index = 0
-        while (index < tokens.size) {
-            val current = tokens[index]
-            if (index + 1 < tokens.size && !current.contains(".") && tokens[index + 1].length == 2) {
-                val merged = "$current.${tokens[index + 1]}".toDoubleOrNull()
-                if (merged != null) {
-                    prices.add(merged)
-                }
-                index += 2
+        val combinedPrices = mutableListOf<Double>()
+        var i = 0
+        while(i < priceTokens.size) {
+            // معالجة حالة رابيت التي تفصل القروش بمسافة (مثال: 100 00)
+            if (i + 1 < priceTokens.size && priceTokens[i+1].length == 2 && !priceTokens[i].contains(".")) {
+                val combined = "${priceTokens[i]}.${priceTokens[i+1]}".toDoubleOrNull()
+                if (combined != null) combinedPrices.add(combined)
+                i += 2
             } else {
-                current.toDoubleOrNull()?.let { prices.add(it) }
-                index++
+                val single = priceTokens[i].toDoubleOrNull()
+                if (single != null) combinedPrices.add(single)
+                i++
             }
         }
         
-        return prices.filter { it >= 1.0 }.minOrNull()?.let { price ->
-            if (price % 1.0 == 0.0) price.toInt().toString() else String.format(java.util.Locale.US, "%.2f", price)
-        }
+        // السعر الحالي (الخصم) هو دائماً الرقم الأصغر
+        val minPrice = combinedPrices.minOrNull()
+        return minPrice?.toString()
     }
 
     private fun cleanRabbitProductName(name: String): String {
         return name
-            .replace(Regex("""\b\d{1,4}\s+(?:00|25|50|75)\b"""), " ")
-            .replace(Regex("""\b(?:00|25|50|75)\s+(?:00|25|50|75)\b"""), " ")
-            .replace(Regex("""[-]?\s*\d{1,2}\s*[%٪]-?"""), " ")
-            .replace(Regex("\\s+"), " ")
+            .replace(Regex("""(?<!\\p{L})\\d{1,4}\\s+(?:00|25|50|75)(?!\\p{L})"""), " ")
+            .replace(Regex("""[-]?\\s*\\d{1,2}\\s*[%٪]-?"""), " ")
+            .replace(Regex("""\\s+"""), " ")
             .trim()
+    }
+
+    private fun collectTextBounds(node: AccessibilityNodeInfo?, output: MutableList<TextBounds>) {
+        if (node == null) return
+        val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+        if (text.isNotEmpty()) {
+            output.add(TextBounds(text, getRect(node)))
+        }
+        for (i in 0 until node.childCount) {
+            collectTextBounds(node.getChild(i), output)
+        }
+    }
+
+    private fun extractRabbitSalePrice(cardNode: AccessibilityNodeInfo): String? {
+        val textNodes = mutableListOf<TextBounds>()
+        collectTextBounds(cardNode, textNodes)
+
+        val currencyNode = textNodes.firstOrNull {
+            it.text.contains("EGP", ignoreCase = true) || it.text.contains("جنيه")
+        } ?: return null
+
+        // Rabbit قد يرتب عقد Accessibility بشكل غير بصري؛ لذلك نقرأ فقط سطر السعر
+        // القريب عمودياً من كلمة EGP أو جنيه، ولا نقرأ الوزن أو عدد القطع.
+        val lineTolerance = maxOf(45, currencyNode.rect.height() * 2)
+        val priceLine = textNodes
+            .filter { kotlin.math.abs(it.rect.centerY() - currencyNode.rect.centerY()) <= lineTolerance }
+            .sortedBy { it.rect.left }
+            .joinToString(" ") { it.text }
+
+        val tokens = Regex("""\\d+(?:[.,]\\d{1,2})?""")
+            .findAll(priceLine)
+            .map { it.value.replace(",", ".") }
+            .toList()
+
+        val prices = mutableListOf<Double>()
+        var index = 0
+        while (index < tokens.size) {
+            val whole = tokens[index]
+            if (index + 1 < tokens.size && !whole.contains(".") && tokens[index + 1].length == 2) {
+                "${whole}.${tokens[index + 1]}".toDoubleOrNull()?.let { prices.add(it) }
+                index += 2
+            } else {
+                whole.toDoubleOrNull()?.let { prices.add(it) }
+                index++
+            }
+        }
+
+        val salePrice = prices.filter { it > 0.0 }.minOrNull() ?: return null
+        return if (salePrice % 1.0 == 0.0) {
+            salePrice.toInt().toString()
+        } else {
+            String.format(java.util.Locale.US, "%.2f", salePrice)
+        }
     }
 
     private fun extractRabbitProductInfo(cardNode: AccessibilityNodeInfo): RabbitProductInfo? {
@@ -249,31 +286,33 @@ class DealScannerService : AccessibilityService() {
         collectTextsFromNode(cardNode, texts)
         val rawText = normalizeRabbitText(texts.distinct().joinToString(" "))
         if (rawText.isBlank()) return null
-        
-        val unitRegex = Regex("""(?i)\b\d+(?:[.,]\d+)?\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\b""")
+
+        val unitRegex = Regex("""(?i)\\b\\d+(?:[.,]\\d+)?\\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\\b""")
         val unit = unitRegex.find(rawText)?.value?.replace(",", ".")?.trim()
-        
-        val beforeCurrency = Regex("""(?i)\bEGP\b|جنيه""").find(rawText)
-            ?.let { rawText.substring(0, it.range.first) } ?: rawText
-            
+
+        val beforeCurrency = Regex("""(?i)\\bEGP\\b|جنيه""").find(rawText)
+            ?.let { rawText.substring(0, it.range.first) }
+            ?: rawText
+
         var name = beforeCurrency
-            .replace(Regex("""(?i)\badd\b|أضف|اضف"""), "")
-            .replace(Regex("""(?i)\bfavorite\b|مفضلة"""), "")
-            .replace(Regex("""\+"""), "")
-            .replace(unitRegex, "")
-            .replace(Regex("""\b\d+(?:[.,]\d+)?\b"""), "") 
-            .replace(Regex("\\s+"), " ")
+            .replace(Regex("""[-]?\\s*\\d{1,2}\\s*[%٪]-?"""), " ")
+            .replace(Regex("""(?i)\\badd\\b|أضف|اضف"""), " ")
+            .replace(Regex("""(?i)\\bfavorite\\b|مفضلة"""), " ")
+            .replace("+", " ")
+            .replace(unitRegex, " ")
+            .replace(Regex("""\\b\\d+(?:[.,]\\d+)?\\b"""), " ")
+            .replace(Regex("""\\s+"""), " ")
             .trim()
-            
-        name = name.replace("EGP", "", ignoreCase = true)
+
+        name = cleanRabbitProductName(name)
+            .replace("EGP", "", ignoreCase = true)
             .replace("جنيه", "", ignoreCase = true)
             .replace("Add", "", ignoreCase = true)
-            .replace("Favorite", "", ignoreCase = true).trim()
-            
-        name = cleanRabbitProductName(name)
-            
+            .replace("Favorite", "", ignoreCase = true)
+            .trim()
+
         if (name.length < 3) return null
-        return RabbitProductInfo(name = name, unit = unit, salePrice = extractRabbitSalePriceFromPriceLine(rawText))
+        return RabbitProductInfo(name, unit, extractRabbitSalePrice(cardNode))
     }
 
     private fun findRabbitProductCard(badgeNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -298,6 +337,7 @@ class DealScannerService : AccessibilityService() {
             return null
         }
 
+        // تحديد لغة التطبيق لضبط الإحداثيات المتوقعة
         val isArabic = isRabbitInArabic()
         val expectedX = if (isArabic) cardRect.left + (cardRect.width() * 0.20f) else cardRect.left + (cardRect.width() * 0.80f)
         val expectedY = cardRect.top + (cardRect.height() * 0.43f)
@@ -323,8 +363,10 @@ class DealScannerService : AccessibilityService() {
                 val centerXRatio = (rect.centerX() - cardRect.left).toFloat() / cardRect.width().toFloat()
                 val centerYRatio = (rect.centerY() - cardRect.top).toFloat() / cardRect.height().toFloat()
 
+                // دعم الكلمات العربية (أضف/اضف) بجانب العلامات
                 val isTextAddButton = text == "+" || desc == "+" || combined == "add" || combined.contains("add to cart") || combined.contains("أضف") || combined.contains("اضف")
                 
+                // تحديد نطاق البحث الهندسي: (0.02 إلى 0.42 لليسار) أو (0.58 إلى 0.98 لليمين)
                 val isValidXRatio = if (isArabic) centerXRatio in 0.02f..0.42f else centerXRatio in 0.58f..0.98f
                 
                 val isGeometryAddButton = node.isClickable && combined.isBlank() && width in 40f..250f && height in 40f..250f &&
@@ -444,6 +486,7 @@ class DealScannerService : AccessibilityService() {
             if (productAdded) {
                 noAddPasses = 0
                 addLog("🔄 Rabbit: تمت الإضافة، ننتظر استقرار الشاشة...")
+                // تمت زيادة وقت الانتظار هنا لـ 2.5 ثانية لضمان انتهاء حركة شريط (Recommended for you) تماماً
                 Thread.sleep(2500)
                 continue
             }
@@ -518,6 +561,8 @@ class DealScannerService : AccessibilityService() {
             if (attempts >= 3) continue
 
             var plusClicked = false
+            
+            // البوت سيعتمد حصرياً على الذكاء الهندسي الآمن ولن ينقر نقراً أعمى أبداً
             val addButton = findRabbitAddButton(productCard)
             if (addButton != null) {
                 plusClicked = clickNodeCenter(addButton)
@@ -557,6 +602,7 @@ class DealScannerService : AccessibilityService() {
         return false
     }
 
+    
     // ==========================================
     // منطق تطبيق بريدفاست القديم (Breadfast Automation)
     // ==========================================
@@ -793,151 +839,203 @@ class DealScannerService : AccessibilityService() {
         } catch (e: Exception) { return false }
     }
 
+    private fun normalizeForCartMatch(text: String): String {
+        return text
+            .lowercase(java.util.Locale.ROOT)
+            .replace("\n", " ")
+            .replace("أ", "ا")
+            .replace("إ", "ا")
+            .replace("آ", "ا")
+            .replace("ى", "ي")
+            .replace("ة", "ه")
+            .replace(Regex("""[^\\p{L}\\p{N}\\s]"""), " ")
+            .replace(Regex("""\\s+"""), " ")
+            .trim()
+    }
+
     private fun findDealPositionInCart(deal: DealData, visibleNodes: List<NodeData>): PositionedDeal? {
-        val normalizedName = normalizeForCartMatch(deal.originalName)
-        val importantWords = normalizedName
-            .split(Regex("\\s+"))
-            .filter { word ->
-                word.length >= 3 &&
-                !word.matches(Regex("\\d+")) &&
-                word !in setOf(
-                    "جم", "قطعه", "قطعة", "pcs", "pc",
-                    "g", "gm", "kg", "ml", "egp", "جنيه"
-                )
+        val words = normalizeForCartMatch(deal.originalName)
+            .split(Regex("""\\s+"""))
+            .filter {
+                it.length >= 3 &&
+                !it.matches(Regex("""\\d+""")) &&
+                it !in setOf("جم", "قطعه", "قطعة", "pcs", "pc", "g", "gm", "kg", "ml", "egp", "جنيه")
             }
             .distinct()
             .take(6)
-            
-        if (importantWords.isEmpty()) return null
-        
+
+        if (words.isEmpty()) return null
+
         var bestNode: AccessibilityNodeInfo? = null
         var bestScore = 0
-        
+        var bestArea = Int.MAX_VALUE
+
         for (nodeData in visibleNodes) {
             val nodeText = normalizeForCartMatch(nodeData.text)
             if (nodeText.isBlank()) continue
-            
-            val score = importantWords.count { word -> nodeText.contains(word) }
-            
-            if (score > bestScore) {
+
+            val score = words.count { nodeText.contains(it) }
+            val rect = getRect(nodeData.node)
+            val area = rect.width() * rect.height()
+
+            if (score > bestScore || (score == bestScore && score > 0 && area < bestArea)) {
                 bestScore = score
+                bestArea = area
                 bestNode = nodeData.node
             }
         }
-        
+
         val requiredScore = when {
-            importantWords.size >= 4 -> 2
-            importantWords.size >= 2 -> 2
+            words.size >= 3 -> 2
+            words.size == 2 -> 2
             else -> 1
         }
-        
+
         if (bestNode == null || bestScore < requiredScore) return null
-        
-        val rect = getRect(bestNode)
-        return PositionedDeal(deal = deal, top = rect.top, score = bestScore)
+
+        return PositionedDeal(deal, getRect(bestNode).top, bestScore)
+    }
+
+    private fun cartScreenSignature(nodes: List<NodeData>): String {
+        return nodes
+            .map {
+                val rect = getRect(it.node)
+                "${normalizeForCartMatch(it.text)}@${rect.top}"
+            }
+            .filter { !it.startsWith("@") }
+            .distinct()
+            .joinToString("|")
+    }
+
+    private fun cartVisibleNodes(): MutableList<NodeData> {
+        val nodes = mutableListOf<NodeData>()
+        val metrics = resources.displayMetrics
+        extractNodes(rootInActiveWindow, nodes, metrics.heightPixels * 0.20f, metrics.heightPixels * 0.82f)
+        return nodes
+    }
+
+    private fun moveCartAndWait(previousSignature: String): Boolean {
+        swipeUp(0.72f, 0.30f, 1100L)
+        repeat(10) {
+            Thread.sleep(250)
+            val signature = cartScreenSignature(cartVisibleNodes())
+            if (signature.isNotBlank() && signature != previousSignature) return true
+        }
+        return false
     }
 
     @TargetApi(30)
     private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
         addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
-        
+
         if (!isCartAlreadyOpen) {
-            val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة") ?: findNodeByText(rootInActiveWindow, "الكيس")
+            val cartNode = findNodeByText(rootInActiveWindow, "Cart")
+                ?: findNodeByText(rootInActiveWindow, "السلة")
+                ?: findNodeByText(rootInActiveWindow, "الكيس")
             if (cartNode != null) {
                 clickNodeSafely(cartNode)
-                Thread.sleep(5000) 
+                Thread.sleep(5000)
             }
         }
-        
-        if (deals.isEmpty()) return
 
+        if (deals.isEmpty()) return
         deals.forEach { it.isAssigned = false }
 
-        val safeTopCart = resources.displayMetrics.heightPixels * 0.20f
-        val safeBottomCart = resources.displayMetrics.heightPixels * 0.82f 
         var loopCount = 0
-        var lastScreenSignature = ""
+        var lastSignature = ""
+        var unchangedScreens = 0
 
-        while (deals.any { !it.isAssigned } && loopCount < 10) {
+        while (deals.any { !it.isAssigned } && loopCount < 20) {
             loopCount++
-            
-            val visibleNodes = mutableListOf<NodeData>()
-            extractNodes(rootInActiveWindow, visibleNodes, safeTopCart, safeBottomCart)
-            
-            val screenSignature = visibleNodes
-                .map { normalizeForCartMatch(it.text) }
-                .filter { it.isNotBlank() }
-                .distinct()
-                .joinToString("|")
-                
-            if (screenSignature == lastScreenSignature) {
-                addLog("⚠️ السلة لم تتغير بعد السحب؛ لن يتم إرسال صورة مكررة.")
-                swipeUp(0.72f, 0.30f, 1100L)
-                Thread.sleep(1800)
+
+            val visibleNodes = cartVisibleNodes()
+            val signature = cartScreenSignature(visibleNodes)
+
+            if (signature.isBlank()) {
+                addLog("⚠️ تعذر قراءة محتوى السلة في الدورة $loopCount.")
+                break
+            }
+
+            if (signature == lastSignature) {
+                unchangedScreens++
+                addLog("⚠️ السلة لم تتغير؛ لن يتم إرسال صورة مكررة.")
+
+                if (unchangedScreens >= 2 || !moveCartAndWait(signature)) {
+                    addLog("🏁 لم يعد هناك انتقال جديد في السلة؛ إيقاف التقرير.")
+                    break
+                }
                 continue
             }
-            lastScreenSignature = screenSignature
 
+            unchangedScreens = 0
+
+            // نحدد مكان كل منتج مرئي ثم نرتبه كما يظهر رأسياً في السلة.
+            val currentBatch = deals
+                .asSequence()
+                .filter { !it.isAssigned }
+                .mapNotNull { findDealPositionInCart(it, visibleNodes) }
+                .sortedBy { it.top }
+                .take(5)
+                .map { it.deal }
+                .toList()
+
+            // ممنوع إرفاق عروض غير مرئية بالصورة الحالية.
+            if (currentBatch.isEmpty()) {
+                addLog("⚠️ لا توجد مطابقة موثوقة للصورة الحالية؛ لن نرسل وصفاً خاطئاً.")
+                lastSignature = signature
+                if (!moveCartAndWait(signature)) break
+                continue
+            }
+
+            // نلتقط الصورة بعد تثبيت قائمة المنتجات الخاصة بها.
             val bitmap = takeScreenshotSync()
             var imageBytes: ByteArray? = null
-            
+
             if (bitmap != null) {
                 try {
                     val topCrop = (bitmap.height * 0.20).toInt()
                     val bottomCrop = (bitmap.height * 0.18).toInt()
-                    val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
+                    val cropped = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
                     val stream = ByteArrayOutputStream()
-                    croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                    cropped.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                     imageBytes = stream.toByteArray()
-                    
+                    cropped.recycle()
                     bitmap.recycle()
-                    croppedBitmap.recycle()
-                } catch (e: Exception) { 
-                    addLog("❌ خطأ في معالجة الصورة: ${e.message}") 
+                } catch (e: Exception) {
+                    addLog("❌ خطأ في معالجة الصورة: ${e.message}")
                 }
             }
 
-            val positionedDeals = mutableListOf<PositionedDeal>()
-            for (deal in deals) {
-                if (deal.isAssigned) continue
-                val result = findDealPositionInCart(deal, visibleNodes)
-                if (result != null) {
-                    positionedDeals.add(result)
-                }
-            }
-            
-            val currentBatch = positionedDeals
-                .sortedBy { it.top }
-                .take(5)
-                .map { it.deal }
-                .toMutableList()
-                
-            currentBatch.forEach { it.isAssigned = true }
-
-            if (currentBatch.isEmpty()) {
-                addLog("⚠️ لم يتم التعرف بثقة على منتجات الصورة الحالية؛ لن يتم إرسال وصف غير مطابق.")
+            val prefix = if (appType == "RABBIT") {
+                if (loopCount == 1) "عروض ممتازة على Rabbit 🐰\n\n" else "وعروض Rabbit إضافية 🐰\n\n"
             } else {
-                val prefix = if (appType == "RABBIT") {
-                    if (loopCount == 1) "عروض ممتازة على Rabbit 🐰\n\n" else "وعروض Rabbit إضافية 🐰\n\n"
-                } else {
-                    if (loopCount == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
-                }
-                val captionText = currentBatch.joinToString("\n\n") { it.dealText }
-                val finalCaption = (prefix + captionText).take(1020)
-
-                if (imageBytes != null) {
-                    addLog("📸 إرسال صورة بها ${currentBatch.size} منتجات...")
-                    sendTelegramPhotoMultipart(token, chatId, imageBytes, finalCaption)
-                } else {
-                    addLog("⚠️ صورة غير متاحة، جاري الإرسال كنص...")
-                    sendTelegramMessage(token, chatId, finalCaption)
-                }
+                if (loopCount == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
             }
+
+            val caption = (prefix + currentBatch.joinToString("\n\n") { it.dealText }).take(1020)
+
+            if (imageBytes != null) {
+                addLog("📸 إرسال صورة تحتوي على ${currentBatch.size} منتجات مرتبة حسب السلة...")
+                sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+            } else {
+                addLog("⚠️ الصورة غير متاحة؛ جاري الإرسال كنص مطابق للمنتجات المرئية.")
+                sendTelegramMessage(token, chatId, caption)
+            }
+
+            currentBatch.forEach { it.isAssigned = true }
+            lastSignature = signature
 
             if (deals.any { !it.isAssigned }) {
-                swipeUp(0.72f, 0.30f, 1100L)
-                Thread.sleep(1800)
+                if (!moveCartAndWait(signature)) {
+                    addLog("🏁 لم تتمكن السلة من الانتقال لعناصر جديدة.")
+                    break
+                }
             }
+        }
+
+        val unsent = deals.count { !it.isAssigned }
+        if (unsent > 0) {
+            addLog("⚠️ انتهى التقرير مع $unsent منتجات لم تطابق السلة بثقة.")
         }
     }
 
@@ -959,7 +1057,7 @@ class DealScannerService : AccessibilityService() {
         val latch = CountDownLatch(1)
         val executor = Executors.newSingleThreadExecutor()
         try {
-            // استدعاء دالة التصوير مباشرة بدون إسنادها لمتغير لأنها تُرجع Void (Unit)
+            // استدعاء دالة التصوير مباشرة بدون إسنادها لمتغير لأنها Void (Unit)
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
                 executor,
@@ -1039,6 +1137,7 @@ class DealScannerService : AccessibilityService() {
             if (responseCode in 200..299) {
                 addLog("✅ Telegram: تم رفع الصورة بنجاح.")
             } else {
+                // سيظهر لك سبب الرفض من تليجرام هنا
                 addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
             }
         } catch (e: Exception) { 
@@ -1110,6 +1209,10 @@ class DealScannerService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    private fun normalizedText(node: AccessibilityNodeInfo): String {
+        return (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+    }
+
     private fun getRect(node: AccessibilityNodeInfo): Rect = Rect().also { node.getBoundsInScreen(it) }
 
     private fun findClickableParent(startNode: AccessibilityNodeInfo, maxLevels: Int = 5): AccessibilityNodeInfo? {
@@ -1124,7 +1227,7 @@ class DealScannerService : AccessibilityService() {
 
     private fun collectNodesByExactText(node: AccessibilityNodeInfo?, target: String, result: MutableList<AccessibilityNodeInfo>) {
         if (node == null) return
-        if (normalizeRabbitText(node.text?.toString() ?: "").equals(target, ignoreCase = true)) result.add(node)
+        if (normalizedText(node).equals(target, ignoreCase = true)) result.add(node)
         for (i in 0 until node.childCount) collectNodesByExactText(node.getChild(i), target, result)
     }
 
