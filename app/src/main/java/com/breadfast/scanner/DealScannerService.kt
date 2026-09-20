@@ -254,7 +254,9 @@ class DealScannerService : AccessibilityService() {
             return null
         }
 
-        val expectedX = cardRect.left + (cardRect.width() * 0.80f)
+        // تحديد لغة التطبيق لضبط الإحداثيات المتوقعة
+        val isArabic = isRabbitInArabic()
+        val expectedX = if (isArabic) cardRect.left + (cardRect.width() * 0.20f) else cardRect.left + (cardRect.width() * 0.80f)
         val expectedY = cardRect.top + (cardRect.height() * 0.43f)
         
         var bestCandidate: AccessibilityNodeInfo? = null
@@ -278,9 +280,14 @@ class DealScannerService : AccessibilityService() {
                 val centerXRatio = (rect.centerX() - cardRect.left).toFloat() / cardRect.width().toFloat()
                 val centerYRatio = (rect.centerY() - cardRect.top).toFloat() / cardRect.height().toFloat()
 
-                val isTextAddButton = text == "+" || desc == "+" || combined == "add" || combined.contains("add to cart")
+                // دعم الكلمات العربية (أضف/اضف) بجانب العلامات
+                val isTextAddButton = text == "+" || desc == "+" || combined == "add" || combined.contains("add to cart") || combined.contains("أضف") || combined.contains("اضف")
+                
+                // تحديد نطاق البحث الهندسي: (0.02 إلى 0.42 لليسار) أو (0.58 إلى 0.98 لليمين)
+                val isValidXRatio = if (isArabic) centerXRatio in 0.02f..0.42f else centerXRatio in 0.58f..0.98f
+                
                 val isGeometryAddButton = node.isClickable && combined.isBlank() && width in 40f..250f && height in 40f..250f &&
-                                          aspectRatio in 0.65f..1.45f && centerXRatio in 0.58f..0.98f && centerYRatio in 0.18f..0.72f
+                                          aspectRatio in 0.65f..1.45f && isValidXRatio && centerYRatio in 0.18f..0.72f
 
                 if (isTextAddButton || isGeometryAddButton) {
                     val distance = kotlin.math.abs(rect.centerX() - expectedX) + kotlin.math.abs(rect.centerY() - expectedY)
@@ -477,8 +484,14 @@ class DealScannerService : AccessibilityService() {
                 plusClicked = clickNodeCenter(addButton)
             }
             
-            // تم حذف النقر الأعمى (Fallback) بالكامل من هنا لمنع فتح صفحة المنتج بالخطأ
-            // البوت سينقر فقط إذا تعرف على الزر برمجياً وهندسياً بشكل مؤكد
+            // النقر الاحتياطي يعتمد على لغة التطبيق لضمان الضغط في الموقع الصحيح (يمين أم يسار)
+            if (!plusClicked) {
+                val rect = getRect(productCard)
+                val fallbackX = if (isRabbitInArabic()) rect.left + (rect.width() * 0.20f) else rect.left + (rect.width() * 0.80f)
+                val fallbackY = rect.top + (rect.height() * 0.43f)
+                plusClicked = tapScreenPoint(fallbackX, fallbackY)
+                if (plusClicked) Thread.sleep(800)
+            }
 
             if (!plusClicked) {
                 rabbitAddAttempts[productKey] = attempts + 1
