@@ -823,7 +823,10 @@ private fun openCartAndSendReport(
             )
 
             if (loopCount >= 3) {
-                addLog("🏁 توقيع السلة فارغ عدة مرات؛ إنهاء التقرير.")
+                addLog(
+                    "🏁 توقيع السلة فارغ عدة مرات؛ " +
+                        "إنهاء التقرير."
+                )
                 break
             }
 
@@ -858,7 +861,8 @@ private fun openCartAndSendReport(
         } catch (e: Exception) {
             addLog(
                 "❌ خطأ في تحليل السلة: " +
-                    "${e.javaClass.simpleName}: ${e.message}"
+                    "${e.javaClass.simpleName}: " +
+                    "${e.message}"
             )
             emptyList()
         }
@@ -892,85 +896,108 @@ private fun openCartAndSendReport(
                 parsedNotSentProducts.isEmpty() &&
                     fallbackDeals.isEmpty()
             ) {
-                addLog("✅ لا توجد منتجات متبقية للإرسال.")
+                addLog(
+                    "✅ لا توجد منتجات متبقية للإرسال."
+                )
                 break
             }
 
-            val bitmap = takeScreenshotSync()
-            var ocrProducts = emptyList<OcrCartProduct>()
-
-val batchText: List<String>
-if (bitmap != null) {
-    try {
-        val ocrText = extractOcrText(bitmap)
-
-        ocrProducts = parseOcrCartProducts(
-            ocrText,
-            deals
-        )
-
-        addLog(
-            "📊 OCR products=${ocrProducts.size}"
-        )
-    } catch (e: Exception) {
-        addLog(
-            "❌ خطأ OCR: " +
-                "${e.javaClass.simpleName}: " +
-                "${e.message}"
-        )
-    }
-}
-
-batchText = when {
-    ocrProducts.isNotEmpty() -> {
-        ocrProducts
-            .take(5)
-            .map { it.toDealText() }
-    }
-
-    parsedNotSentProducts.isNotEmpty() -> {
-        parsedNotSentProducts
-            .take(5)
-            .map { it.textDescription }
-    }
-
-    else -> {
-        fallbackDeals
-            .map { it.dealText }
-    }
-}
-
-val captionPrefix =
-    if (sentProducts.isEmpty()) {
-        "عروض Rabbit 🐰\n\n"
-    } else {
-        "وعروض Rabbit إضافية 🐰\n\n"
-    }
-
-val caption = (
-    captionPrefix +
-        batchText.joinToString("\n\n")
-    ).take(1020)
-
             addLog(
-                "📷 التقاط Screenshot للشاشة الحالية: " +
-                    "batch=${batchText.size}, " +
-                    "parsed=${parsedProducts.size}"
+                "📷 التقاط Screenshot للشاشة الحالية..."
             )
 
+            val bitmap = takeScreenshotSync()
 
-if (bitmap != null) {
-    val ocrText = extractOcrText(bitmap)
+            var ocrProducts =
+                emptyList<OcrCartProduct>()
 
-    ocrProducts = parseOcrCartProducts(
-        ocrText,
-        deals
-    )
+            if (bitmap != null) {
+                try {
+                    val ocrText =
+                        extractOcrText(bitmap)
 
-    addLog(
-        "📊 OCR products=${ocrProducts.size}"
-    )
-}
+                    ocrProducts =
+                        parseOcrCartProducts(
+                            ocrText,
+                            deals
+                        )
+
+                    addLog(
+                        "📊 OCR products=" +
+                            "${ocrProducts.size}"
+                    )
+                } catch (e: Exception) {
+                    addLog(
+                        "❌ خطأ OCR: " +
+                            "${e.javaClass.simpleName}: " +
+                            "${e.message}"
+                    )
+                }
+            } else {
+                addLog(
+                    "⚠️ Screenshot رجع null قبل OCR."
+                )
+            }
+
+            val batchText: List<String> =
+                when {
+                    ocrProducts.isNotEmpty() -> {
+                        ocrProducts
+                            .take(5)
+                            .map {
+                                it.toDealText()
+                            }
+                    }
+
+                    parsedNotSentProducts
+                        .isNotEmpty() -> {
+                        parsedNotSentProducts
+                            .take(5)
+                            .map {
+                                it.textDescription
+                            }
+                    }
+
+                    else -> {
+                        fallbackDeals
+                            .map {
+                                it.dealText
+                            }
+                    }
+                }
+
+            if (batchText.isEmpty()) {
+                addLog(
+                    "⚠️ لم يتم إنشاء نص للدفعة."
+                )
+
+                if (bitmap != null &&
+                    !bitmap.isRecycled
+                ) {
+                    bitmap.recycle()
+                }
+
+                break
+            }
+
+            val captionPrefix =
+                if (sentProducts.isEmpty()) {
+                    "عروض Rabbit 🐰\n\n"
+                } else {
+                    "وعروض Rabbit إضافية 🐰\n\n"
+                }
+
+            val caption = (
+                captionPrefix +
+                    batchText.joinToString("\n\n")
+                ).take(1020)
+
+            addLog(
+                "📝 تجهيز الدفعة: " +
+                    "batch=${batchText.size}, " +
+                    "parsed=${parsedProducts.size}, " +
+                    "ocr=${ocrProducts.size}"
+            )
 
             var imageBytes: ByteArray? = null
 
@@ -978,17 +1005,22 @@ if (bitmap != null) {
                 try {
                     addLog(
                         "📐 Screenshot: " +
-                            "${bitmap.width}x${bitmap.height}"
+                            "${bitmap.width}x" +
+                            "${bitmap.height}"
                     )
 
                     val topCrop =
-                        (bitmap.height * 0.10f).toInt()
+                        (bitmap.height * 0.10f)
+                            .toInt()
 
                     val bottomCrop =
-                        (bitmap.height * 0.08f).toInt()
+                        (bitmap.height * 0.08f)
+                            .toInt()
 
                     val cropHeight =
-                        bitmap.height - topCrop - bottomCrop
+                        bitmap.height -
+                            topCrop -
+                            bottomCrop
 
                     if (
                         bitmap.width > 100 &&
@@ -1012,7 +1044,8 @@ if (bitmap != null) {
                             stream
                         )
 
-                        imageBytes = stream.toByteArray()
+                        imageBytes =
+                            stream.toByteArray()
 
                         croppedBitmap.recycle()
 
@@ -1025,26 +1058,17 @@ if (bitmap != null) {
                             "⚠️ أبعاد القص غير صالحة."
                         )
                     }
-
-                    bitmap.recycle()
                 } catch (e: Exception) {
                     addLog(
                         "❌ خطأ تجهيز Screenshot: " +
                             "${e.javaClass.simpleName}: " +
                             "${e.message}"
                     )
-
-                    try {
-                        if (!bitmap.isRecycled) {
-                            bitmap.recycle()
-                        }
-                    } catch (_: Exception) {
+                } finally {
+                    if (!bitmap.isRecycled) {
+                        bitmap.recycle()
                     }
                 }
-            } else {
-                addLog(
-                    "⚠️ takeScreenshotSync() أعاد null."
-                )
             }
 
             val sentSuccessfully =
@@ -1083,7 +1107,24 @@ if (bitmap != null) {
                 break
             }
 
-            if (parsedNotSentProducts.isNotEmpty()) {
+            if (ocrProducts.isNotEmpty()) {
+                ocrProducts
+                    .take(5)
+                    .forEach { product ->
+                        sentProducts.add(
+                            normalizeProductKey(
+                                product.name
+                            )
+                        )
+                    }
+
+                addLog(
+                    "✅ تم اعتماد منتجات OCR: " +
+                        "${ocrProducts.size}"
+                )
+            } else if (
+                parsedNotSentProducts.isNotEmpty()
+            ) {
                 parsedNotSentProducts
                     .take(5)
                     .forEach { product ->
@@ -1105,7 +1146,8 @@ if (bitmap != null) {
 
             addLog(
                 "✅ تم إرسال الدفعة بنجاح. " +
-                    "الإجمالي=${sentProducts.size}/${deals.size}"
+                    "الإجمالي=${sentProducts.size}/" +
+                    "${deals.size}"
             )
         } else {
             addLog(
@@ -1125,7 +1167,8 @@ if (bitmap != null) {
         lastSignature = signature
 
         addLog(
-            "↕️ محاولة تمرير السلة بعد الدورة $loopCount..."
+            "↕️ محاولة تمرير السلة بعد الدورة " +
+                "$loopCount..."
         )
 
         val moved = try {
@@ -1159,7 +1202,6 @@ if (bitmap != null) {
             "${sentProducts.size}/${deals.size} منتجات."
     )
 }
-
 
 @TargetApi(30)
 private fun sendBreadfastCartReport(
