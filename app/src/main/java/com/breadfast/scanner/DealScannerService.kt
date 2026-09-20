@@ -112,6 +112,103 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
+    private fun extractRabbitCardPriceValues(
+    text: String
+): List<Double> {
+    val normalized =
+        text
+            .replace("\u200E", "")
+            .replace("\u200F", "")
+            .replace("\u202A", "")
+            .replace("\u202B", "")
+            .replace("\u202C", "")
+            .replace("\u2060", "")
+            .replace("\u00A0", " ")
+            .replace("٫", ".")
+            .replace("٬", ",")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+    val tokens =
+        Regex(
+            """\d+(?:[.,]\d{1,2})?"""
+        )
+            .findAll(normalized)
+            .map { match ->
+                match.value
+            }
+            .toList()
+
+    if (tokens.isEmpty()) {
+        return emptyList()
+    }
+
+    val values =
+        mutableListOf<Double>()
+
+    var index = 0
+
+    while (index < tokens.size) {
+        val currentToken =
+            tokens[index]
+
+        val currentDigits =
+            currentToken.replace(
+                Regex("""\D"""),
+                ""
+            )
+
+        val nextToken =
+            tokens.getOrNull(index + 1)
+
+        val nextDigits =
+            nextToken
+                ?.replace(
+                    Regex("""\D"""),
+                    ""
+                )
+                .orEmpty()
+
+        if (
+            nextDigits.length == 2 &&
+            !currentToken.contains(".") &&
+            !currentToken.contains(",") &&
+            currentDigits.length <= 4
+        ) {
+            val merged =
+                "$currentDigits.$nextDigits"
+                    .toDoubleOrNull()
+
+            if (
+                merged != null &&
+                merged >= 1.0 &&
+                merged <= 5000.0
+            ) {
+                values.add(merged)
+                index += 2
+                continue
+            }
+        }
+
+        val direct =
+            currentToken
+                .replace(",", ".")
+                .toDoubleOrNull()
+
+        if (
+            direct != null &&
+            direct >= 1.0 &&
+            direct <= 5000.0
+        ) {
+            values.add(direct)
+        }
+
+        index++
+    }
+
+    return values
+        .distinct()
+}
 
     private fun ensureOcrReady(): Boolean {
     if (arabicOcr != null) {
@@ -1743,7 +1840,8 @@ private fun parseOcrCartProducts(
         val node: AccessibilityNodeInfo
     )
 
-    val candidates = mutableListOf<CardCandidate>()
+    val candidates =
+        mutableListOf<CardCandidate>()
 
     fun collect(node: AccessibilityNodeInfo?) {
         if (node == null) {
@@ -1792,123 +1890,25 @@ private fun parseOcrCartProducts(
 
     collect(root)
 
-    fun normalizeCardText(text: String): String {
+    fun normalizeCardText(
+        text: String
+    ): String {
         return text
             .replace("\u200E", "")
             .replace("\u200F", "")
             .replace("\u202A", "")
             .replace("\u202B", "")
             .replace("\u202C", "")
+            .replace("\u2060", "")
+            .replace("\u00A0", " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
     }
 
-    fun extractPriceValues(text: String): List<Double> {
-        val normalized =
-            normalizeCardText(text)
-                .replace("٫", ".")
-                .replace("٬", ",")
-
-        val matches = Regex(
-            """\d+(?:[.,]\d{1,2})?"""
-        )
-            .findAll(normalized)
-            .map { match ->
-                match.value
-            }
-            .toList()
-
-        val prices = mutableListOf<Double>()
-
-        var index = 0
-
-        while (index < matches.size) {
-            val current = matches[index]
-            val next = matches.getOrNull(index + 1)
-
-            val currentDigits =
-                current.replace(
-                    Regex("""\D"""),
-                    ""
-                )
-
-            val nextDigits =
-                next?.replace(
-                    Regex("""\D"""),
-                    ""
-                ).orEmpty()
-
-            if (
-                nextDigits.length == 2 &&
-                !current.contains(".") &&
-                !current.contains(",")
-            ) {
-                val combined =
-                    "$currentDigits.$nextDigits"
-                        .toDoubleOrNull()
-
-                if (
-                    combined != null &&
-                    combined >= 1.0 &&
-                    combined <= 5000.0
-                ) {
-                    prices.add(combined)
-                    index += 2
-                    continue
-                }
-            }
-
-            val value =
-                current
-                    .replace(",", ".")
-                    .toDoubleOrNull()
-
-            if (
-                value != null &&
-                value >= 1.0 &&
-                value <= 5000.0
-            ) {
-                prices.add(value)
-            }
-
-            index++
-        }
-
-        return prices
-            .distinct()
-    }
-
-    fun removePriceAndUnitData(text: String): String {
-        var result =
-            normalizeCardText(text)
-
-        result = result
-            .replace(
-                Regex(
-                    """\b\d+(?:[.,]\d+)?\s*(""" +
-                        """قطعة|قطعه|جم|كجم|مل|لتر|""" +
-                        """علكة|pcs?|pc|g|gm|kg|ml|l""" +
-                        """)\b"""
-                ),
-                " "
-            )
-            .replace(
-                Regex(
-                    """\d+(?:[.,]\d{1,2})?"""
-                ),
-                " "
-            )
-            .replace("جنيه", " ")
-            .replace("EGP", " ", ignoreCase = true)
-            .replace(Regex("""[+|=_<>~`]"""), " ")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
-
-        return result
-    }
-
-    fun extractUnit(text: String): String? {
-        val unitMatch = Regex(
+    fun extractUnit(
+        text: String
+    ): String? {
+        return Regex(
             """\b\d+(?:[.,]\d+)?\s*(""" +
                 """قطعة|قطعه|جم|كجم|مل|لتر|""" +
                 """علكة|pcs?|pc|g|gm|kg|ml|l""" +
@@ -1917,12 +1917,230 @@ private fun parseOcrCartProducts(
             .find(
                 normalizeCardText(text)
             )
-
-        return unitMatch
             ?.value
             ?.replace(Regex("""\s+"""), " ")
             ?.trim()
     }
+
+    fun removeNonPriceNumbers(
+        text: String,
+        unit: String?
+    ): String {
+        var result =
+            normalizeCardText(text)
+
+        if (!unit.isNullOrBlank()) {
+            result =
+                result.replace(
+                    unit,
+                    " ",
+                    ignoreCase = true
+                )
+        }
+
+        result = result
+            .replace("جنيه", " ", ignoreCase = true)
+            .replace("EGP", " ", ignoreCase = true)
+            .replace(
+                Regex("""[+|=_<>~`]"""),
+                " "
+            )
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        return result
+    }
+
+    fun extractNumericTokens(
+        text: String
+    ): List<String> {
+        return Regex(
+            """\d+(?:[.,]\d{1,2})?"""
+        )
+            .findAll(text)
+            .map { match ->
+                match.value
+            }
+            .toList()
+    }
+
+    fun tokenToDouble(
+        token: String
+    ): Double? {
+        return token
+            .replace(",", ".")
+            .toDoubleOrNull()
+            ?.takeIf { value ->
+                value >= 1.0 &&
+                    value <= 5000.0
+            }
+    }
+
+    fun mergePriceTokens(
+        tokens: List<String>
+    ): List<Double> {
+        val result =
+            mutableListOf<Double>()
+
+        var index = 0
+
+        while (index < tokens.size) {
+            val current =
+                tokens[index]
+
+            val currentDigits =
+                current.replace(
+                    Regex("""\D"""),
+                    ""
+                )
+
+            val next =
+                tokens.getOrNull(index + 1)
+
+            val nextDigits =
+                next
+                    ?.replace(
+                        Regex("""\D"""),
+                        ""
+                    )
+                    .orEmpty()
+
+            if (
+                nextDigits.length == 2 &&
+                !current.contains(".") &&
+                !current.contains(",") &&
+                currentDigits.length <= 4
+            ) {
+                val merged =
+                    "$currentDigits.$nextDigits"
+                        .toDoubleOrNull()
+
+                if (
+                    merged != null &&
+                    merged >= 1.0 &&
+                    merged <= 5000.0
+                ) {
+                    result.add(merged)
+                    index += 2
+                    continue
+                }
+            }
+
+            tokenToDouble(current)
+                ?.let { value ->
+                    result.add(value)
+                }
+
+            index++
+        }
+
+        return result
+    }
+
+    fun chooseCardPrices(
+        text: String,
+        unit: String?
+    ): Pair<Double?, Double?> {
+        val cleaned =
+            removeNonPriceNumbers(
+                text = text,
+                unit = unit
+            )
+
+        val tokens =
+            extractNumericTokens(cleaned)
+
+        if (tokens.isEmpty()) {
+            return null to null
+        }
+
+        val merged =
+            mergePriceTokens(tokens)
+
+        if (merged.isEmpty()) {
+            return null to null
+        }
+
+        val candidates =
+            merged
+                .distinct()
+                .filter { value ->
+                    value >= 2.0 &&
+                        value <= 5000.0
+                }
+
+        if (candidates.isEmpty()) {
+            return null to null
+        }
+
+        /*
+         * في نص Rabbit:
+         * السعر الحالي يظهر قبل السعر القديم،
+         * ثم تأتي كمية السلة غالبًا في نهاية النص.
+         *
+         * لذلك نختار آخر سعرين صالحين،
+         * وليس أصغر رقم في البطاقة.
+         */
+        val currentPrice =
+            candidates
+                .getOrNull(
+                    candidates.size - 2
+                )
+                ?: candidates.last()
+
+        val oldPrice =
+            candidates.lastOrNull()
+                ?.takeIf { value ->
+                    value > currentPrice
+                }
+
+        return oldPrice to currentPrice
+    }
+
+    fun removeProductData(
+        text: String,
+        unit: String?
+    ): String {
+        var result =
+            normalizeCardText(text)
+
+        if (!unit.isNullOrBlank()) {
+            result =
+                result.replace(
+                    unit,
+                    " ",
+                    ignoreCase = true
+                )
+        }
+
+        result = result
+            .replace(
+                Regex(
+                    """\d+(?:[.,]\d{1,2})?"""
+                ),
+                " "
+            )
+            .replace("جنيه", " ", ignoreCase = true)
+            .replace("EGP", " ", ignoreCase = true)
+            .replace(Regex("""[+|=_<>~`]"""), " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
+
+        return result
+    }
+
+    val ignoredPhrases =
+        listOf(
+            "اختيار جامد",
+            "وفرت",
+            "يلا ندفع",
+            "يللا ندفع",
+            "توصيل ببلاش",
+            "واو ليك",
+            "فضي الكيس",
+            "السلة",
+            "الكيس"
+        )
 
     val rawCards =
         candidates
@@ -1936,26 +2154,15 @@ private fun parseOcrCartProducts(
                 candidate.rect.top
             }
 
-    val products = mutableListOf<OcrCartProduct>()
+    val products =
+        mutableListOf<OcrCartProduct>()
 
     rawCards.forEach { card ->
         val cardText =
             normalizeCardText(card.text)
 
-        val ignoredCardPhrases = listOf(
-            "اختيار جامد",
-            "وفرت",
-            "يلا ندفع",
-            "يللا ندفع",
-            "توصيل ببلاش",
-            "واو ليك",
-            "فضي الكيس",
-            "السلة",
-            "الكيس"
-        )
-
         if (
-            ignoredCardPhrases.any { phrase ->
+            ignoredPhrases.any { phrase ->
                 cardText.contains(
                     phrase,
                     ignoreCase = true
@@ -1965,74 +2172,41 @@ private fun parseOcrCartProducts(
             return@forEach
         }
 
-        val allValues =
-            extractPriceValues(cardText)
-
-        if (allValues.isEmpty()) {
-            addLog(
-                "⚠️ Rabbit Accessibility: " +
-                    "لا توجد أرقام في البطاقة: " +
-                    cardText.take(180)
-            )
-            return@forEach
-        }
-
         val unit =
             extractUnit(cardText)
 
-        val quantityValues =
-            unit
-                ?.let { unitText ->
-                    extractPriceValues(unitText)
-                }
-                ?: emptyList()
-
-        val priceCandidates =
-            allValues
-                .filter { value ->
-                    !quantityValues.contains(value)
-                }
-                .filter { value ->
-                    value >= 2.0 &&
-                        value <= 5000.0
-                }
-
-        if (priceCandidates.isEmpty()) {
-            addLog(
-                "⚠️ Rabbit Accessibility: " +
-                    "لا توجد أسعار صالحة في البطاقة: " +
-                    cardText.take(180)
+        val prices =
+            chooseCardPrices(
+                text = cardText,
+                unit = unit
             )
-            return@forEach
-        }
-
-        val newPrice =
-            priceCandidates.minOrNull()
 
         val oldPrice =
-            priceCandidates
-                .filter { value ->
-                    newPrice != null &&
-                        value > newPrice
-                }
-                .maxOrNull()
+            prices.first
+
+        val newPrice =
+            prices.second
 
         if (newPrice == null) {
+            addLog(
+                "⚠️ Rabbit Accessibility: " +
+                    "تعذر استخراج السعر من: " +
+                    cardText.take(180)
+            )
             return@forEach
         }
 
         var productName =
-            removePriceAndUnitData(cardText)
-
-        productName = productName
-            .replace(
-                Regex(
-                    """\b\d+\b"""
-                ),
-                " "
+            removeProductData(
+                text = cardText,
+                unit = unit
             )
-            .replace(Regex("""\s+"""), " ")
-            .trim()
+
+        productName =
+            productName
+                .replace(Regex("""\b\d+\b"""), " ")
+                .replace(Regex("""\s+"""), " ")
+                .trim()
 
         if (
             productName.length < 4 ||
@@ -2040,11 +2214,6 @@ private fun parseOcrCartProducts(
                 char.isLetter()
             } < 3
         ) {
-            addLog(
-                "⚠️ Rabbit Accessibility: " +
-                    "اسم غير صالح: [$productName] " +
-                    "من البطاقة: ${cardText.take(180)}"
-            )
             return@forEach
         }
 
@@ -2055,22 +2224,23 @@ private fun parseOcrCartProducts(
 
         val discount =
             calculateDiscount(
-                oldPrice,
-                newPrice
+                oldPrice = oldPrice,
+                newPrice = newPrice
             )?.takeIf { value ->
                 value in 1..95
             }
 
-        val product = OcrCartProduct(
-            name = productName,
-            price = formatPrice(newPrice),
-            oldPrice = oldPrice?.let { value ->
-                formatPrice(value)
-            },
-            discount = discount,
-            topY = card.rect.top,
-            bottomY = card.rect.bottom
-        )
+        val product =
+            OcrCartProduct(
+                name = productName,
+                price = formatPrice(newPrice),
+                oldPrice = oldPrice?.let { value ->
+                    formatPrice(value)
+                },
+                discount = discount,
+                topY = card.rect.top,
+                bottomY = card.rect.bottom
+            )
 
         products.add(product)
 
