@@ -137,6 +137,76 @@ class DealScannerService : AccessibilityService() {
 }
 
 
+    private fun logRabbitCartAccessibleText() {
+    val root = rootInActiveWindow
+
+    if (root == null) {
+        addLog(
+            "❌ Rabbit Cart Accessibility: " +
+                "rootInActiveWindow = null"
+        )
+        return
+    }
+
+    val metrics = resources.displayMetrics
+
+    val allNodes = mutableListOf<NodeData>()
+
+    extractNodes(
+        node = root,
+        nodesList = allNodes,
+        safeTop = metrics.heightPixels * 0.08f,
+        safeBottom = metrics.heightPixels * 0.94f
+    )
+
+    val visibleTextNodes = allNodes
+        .mapNotNull { item ->
+            val text = normalizeRabbitText(item.text)
+            val rect = getRect(item.node)
+
+            if (
+                text.isBlank() ||
+                rect.isEmpty ||
+                rect.width() <= 0 ||
+                rect.height() <= 0
+            ) {
+                null
+            } else {
+                Triple(text, rect, item.node)
+            }
+        }
+        .distinctBy { item ->
+            "${item.first}|${item.second.left}|" +
+                "${item.second.top}|${item.second.right}|" +
+                "${item.second.bottom}"
+        }
+        .sortedWith(
+            compareBy<Triple<String, Rect, AccessibilityNodeInfo>> {
+                it.second.top
+            }.thenByDescending {
+                it.second.right
+            }
+        )
+
+    addLog(
+        "🔎 Rabbit Cart Accessibility: " +
+            "${visibleTextNodes.size} نصًا ظاهرًا"
+    )
+
+    visibleTextNodes.forEachIndexed { index, item ->
+        val text = item.first
+        val rect = item.second
+
+        addLog(
+            "📱 CartNode #${index + 1}: " +
+                "text=[$text] | " +
+                "x=${rect.left}-${rect.right} | " +
+                "y=${rect.top}-${rect.bottom} | " +
+                "clickable=${item.third.isClickable}"
+        )
+    }
+}
+    
     override fun onInterrupt() {
     arabicOcr?.recycle()
     arabicOcr = null
@@ -1790,6 +1860,10 @@ private fun openCartAndSendReport(
         val visibleNodes = cartVisibleNodes()
         val signature = cartScreenSignature(visibleNodes)
 
+        if (loopCount == 1) {
+    logRabbitCartAccessibleText()
+}
+        
         addLog(
             "🔍 Rabbit Cart OCR Position: دورة=$loopCount, " +
                 "nodes=${visibleNodes.size}, " +
