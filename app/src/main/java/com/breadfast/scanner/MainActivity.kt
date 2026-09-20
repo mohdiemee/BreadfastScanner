@@ -118,7 +118,7 @@ class MainActivity : Activity() {
 
         rabbitLayout.addView(createLabel("حزمة رابيت (Target Package):"))
         val rbSelectAppBtn = Button(this).apply {
-            val savedPkg = prefs.getString("RABBIT_PACKAGE", "com.rabbit.grocery")
+            val savedPkg = prefs.getString("RABBIT_PACKAGE", "com.rabbit.grocery") // افتراضي مبدئي
             text = "$savedPkg\n(اضغط للتغيير)"
             setBackgroundColor(Color.parseColor("#A5D6A7"))
             setOnClickListener { showAppPickerDialog(this, prefs, "RABBIT_PACKAGE") }
@@ -221,10 +221,7 @@ class MainActivity : Activity() {
         }
         mainLayout.addView(logText)
 
-        val logButtonsLayout = LinearLayout(this).apply { 
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(0, 20, 0, 40) 
-        }
+        val logButtonsLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, 20, 0, 40) }
         
         val refreshLogBtn = Button(this).apply {
             text = "تحديث السجل"
@@ -233,8 +230,8 @@ class MainActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener { logText.text = prefs.getString("APP_LOGS", "لا توجد سجلات حتى الآن.") }
         }
-        
-        // --- زر نسخ السجل الجديد ---
+
+        // --- الزر الجديد الخاص بالنسخ ---
         val copyLogBtn = Button(this).apply {
             text = "نسخ السجل"
             setBackgroundColor(Color.parseColor("#2196F3")) // لون أزرق مميز
@@ -244,10 +241,10 @@ class MainActivity : Activity() {
                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                 val clip = android.content.ClipData.newPlainText("ScannerLogs", prefs.getString("APP_LOGS", ""))
                 clipboard.setPrimaryClip(clip)
-                Toast.makeText(this@MainActivity, "تم نسخ السجل للحافظة!", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "تم نسخ السجل بنجاح!", Toast.LENGTH_SHORT).show()
             }
         }
-
+        
         val clearLogBtn = Button(this).apply {
             text = "مسح السجل"
             setBackgroundColor(Color.DKGRAY)
@@ -262,14 +259,12 @@ class MainActivity : Activity() {
         logButtonsLayout.addView(refreshLogBtn)
         logButtonsLayout.addView(copyLogBtn)
         logButtonsLayout.addView(clearLogBtn)
-        
         mainLayout.addView(logButtonsLayout)
 
         scrollView.addView(mainLayout)
         setContentView(scrollView)
     }
 
-    // دوال مساعدة (Helper Functions) لتقليل الكود
     private fun createLabel(text: String): TextView = TextView(this).apply {
         this.text = text
         textSize = 14f
