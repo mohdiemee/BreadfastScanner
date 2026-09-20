@@ -147,37 +147,60 @@ class DealScannerService : AccessibilityService() {
     private fun prepareBitmapForOcr(
     source: Bitmap
 ): Bitmap {
+    val scaleFactor = 2.0f
+
+    val scaledWidth =
+        (source.width * scaleFactor).toInt()
+
+    val scaledHeight =
+        (source.height * scaleFactor).toInt()
+
     val result = Bitmap.createBitmap(
-        source.width,
-        source.height,
+        scaledWidth,
+        scaledHeight,
         Bitmap.Config.ARGB_8888
     )
 
     val canvas = Canvas(result)
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-    paint.color = Color.WHITE
+    val backgroundPaint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+        }
+
     canvas.drawRect(
         0f,
         0f,
-        source.width.toFloat(),
-        source.height.toFloat(),
-        paint
+        scaledWidth.toFloat(),
+        scaledHeight.toFloat(),
+        backgroundPaint
     )
 
-    val matrix = android.graphics.Matrix()
+    val imagePaint =
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            isFilterBitmap = true
+            isDither = true
+        }
 
-    val scale = minOf(
-        source.width.toFloat() / source.width.toFloat(),
-        source.height.toFloat() / source.height.toFloat()
+    val sourceRect = Rect(
+        0,
+        0,
+        source.width,
+        source.height
     )
 
-    matrix.setScale(scale, scale)
+    val destinationRect = Rect(
+        0,
+        0,
+        scaledWidth,
+        scaledHeight
+    )
 
     canvas.drawBitmap(
         source,
-        matrix,
-        paint
+        sourceRect,
+        destinationRect,
+        imagePaint
     )
 
     return result
@@ -429,8 +452,6 @@ private fun parseOcrCartProducts(
         return emptyList()
     }
 
-    val products = mutableListOf<OcrCartProduct>()
-
     val ignoredPhrases = listOf(
         "اختيار جامد",
         "وفرت",
@@ -457,9 +478,7 @@ private fun parseOcrCartProducts(
 
         return value.isBlank() ||
             ignoredPhrases.any { phrase ->
-                value.contains(
-                    compact(phrase)
-                )
+                value.contains(compact(phrase))
             }
     }
 
@@ -497,6 +516,12 @@ private fun parseOcrCartProducts(
                 " "
             )
             .replace(Regex("""[+|=_<>~`]"""), " ")
+            .replace(
+                Regex(
+                    """(?<![\p{L}\p{N}])\d+(?:[.,]\d+)?(?![\p{L}\p{N}])"""
+                ),
+                " "
+            )
             .replace(Regex("""\s+"""), " ")
             .trim()
     }
@@ -527,11 +552,7 @@ private fun parseOcrCartProducts(
             return false
         }
 
-        val lettersCount = normalized.count {
-            it.isLetter()
-        }
-
-        return lettersCount >= 3
+        return normalized.count { it.isLetter() } >= 3
     }
 
     fun isPriceLine(line: String): Boolean {
@@ -547,8 +568,150 @@ private fun parseOcrCartProducts(
         val numbers = extractOcrNumbers(normalized)
 
         return numbers.any { value ->
-            value >= 3.0 && value <= 5000.0
+            value >= 3.0 &&
+                value <= 5000.0
         }
+    }
+
+    fun normalizePriceToken(token: String): Double? {
+        val cleaned = normalizeOcrText(token)
+            .replace("O", "0", ignoreCase = true)
+            .replace("o", "0")
+            .replace(",", ".")
+            .replace(Regex("""[^\d.]"""), "")
+            .trim()
+
+        if (cleaned.isBlank()) {
+            return null
+        }
+
+        val direct = cleaned.toDoubleOrNull()
+
+        if (
+            direct != null &&
+            direct >= 1.0 &&
+            direct <= 5000.0
+        ) {
+            return direct
+        }
+
+        return null
+    }
+
+    fun fixMissingDecimal(value: Double): Double {
+        val text = formatPrice(value)
+
+        if (
+            "." in text ||
+            value < 1000.0 ||
+            value >= 5000.0
+        ) {
+            return value
+        }
+
+        val digits = text.replace(".", "")
+
+        if (digits.length < 4) {
+            return value
+        }
+
+        val withTwoDecimals =
+            digits.dropLast(2) +
+                "." +
+                digits.takeLast(2)
+
+        val repaired =
+            withTwoDecimals.toDoubleOrNull()
+
+        return if (
+            repaired != null &&
+            repaired >= 1.0 &&
+            repaired <= 3000.0
+        ) {
+            repaired
+        } else {
+            value
+        }
+    }
+
+    fun extractPriceCandidates(
+        priceLines: List<String>
+    ): List<Double> {
+        val result = mutableListOf<Double>()
+
+        for (line in priceLines) {
+            val normalized = normalizeOcrText(line)
+
+            val tokens = Regex(
+                """\d+(?:[.,]\d{1,2})?"""
+            ).findAll(normalized)
+                .map { match ->
+                    match.value
+                }
+                .toList()
+
+            var tokenIndex = 0
+
+            while (tokenIndex < tokens.size) {
+                val currentToken = tokens[tokenIndex]
+
+                val currentValue =
+                    normalizePriceToken(currentToken)
+
+                if (currentValue == null) {
+                    tokenIndex++
+                    continue
+                }
+
+                val nextToken =
+                    tokens.getOrNull(tokenIndex + 1)
+
+                val nextDigits =
+                    nextToken
+                        ?.replace(Regex("""\D"""), "")
+                        .orEmpty()
+
+                if (
+                    nextDigits.length == 2 &&
+                    !currentToken.contains(".") &&
+                    !currentToken.contains(",")
+                ) {
+                    val wholeDigits =
+                        currentToken.replace(
+                            Regex("""\D"""),
+                            ""
+                        )
+
+                    val merged =
+                        "$wholeDigits.$nextDigits"
+                            .toDoubleOrNull()
+
+                    if (
+                        merged != null &&
+                        merged >= 1.0 &&
+                        merged <= 5000.0
+                    ) {
+                        result.add(merged)
+                        tokenIndex += 2
+                        continue
+                    }
+                }
+
+                result.add(
+                    fixMissingDecimal(currentValue)
+                )
+
+                tokenIndex++
+            }
+        }
+
+        return result
+            .filter { value ->
+                value >= 1.0 &&
+                    value <= 5000.0
+            }
+            .distinct()
+            .sorted()
     }
 
     fun choosePrices(
@@ -556,7 +719,8 @@ private fun parseOcrCartProducts(
     ): Pair<Double?, Double?> {
         val candidates = values
             .filter { value ->
-                value >= 3.0 && value <= 5000.0
+                value >= 1.0 &&
+                    value <= 5000.0
             }
             .distinct()
             .sorted()
@@ -569,15 +733,18 @@ private fun parseOcrCartProducts(
             return null to candidates.first()
         }
 
-        val newPrice = candidates.first()
+        val currentPrice =
+            candidates.first()
 
-        val oldPrice = candidates
-            .firstOrNull { value ->
-                value > newPrice
+        val oldPrice =
+            candidates.firstOrNull { value ->
+                value > currentPrice
             }
 
-        return oldPrice to newPrice
+        return oldPrice to currentPrice
     }
+
+    val products = mutableListOf<OcrCartProduct>()
 
     var index = 0
 
@@ -597,7 +764,7 @@ private fun parseOcrCartProducts(
 
         while (
             cursor < lines.size &&
-            cursor <= index + 7
+            cursor <= index + 8
         ) {
             val line = lines[cursor]
 
@@ -637,12 +804,6 @@ private fun parseOcrCartProducts(
                 cleanProductNamePart(line)
             }
             .joinToString(" ")
-            .replace(
-                Regex(
-                    """(?<![\p{L}\p{N}])[\d+\-]+(?![\p{L}\p{N}])"""
-                ),
-                " "
-            )
             .replace(Regex("""\s+"""), " ")
             .trim()
 
@@ -663,12 +824,11 @@ private fun parseOcrCartProducts(
             isPriceLine(line)
         }
 
-        val values = priceLines
-            .flatMap { line ->
-                extractOcrNumbers(line)
-            }
+        val values =
+            extractPriceCandidates(priceLines)
 
         val prices = choosePrices(values)
+
         val oldPrice = prices.first
         val newPrice = prices.second
 
