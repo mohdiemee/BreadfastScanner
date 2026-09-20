@@ -113,7 +113,6 @@ class DealScannerService : AccessibilityService() {
         val products = mutableListOf<CartProduct>()
         var startIndex = 0
         while (startIndex < nodes.size) {
-            // تخطي أزرار الكمية (- 1 +)
             while (startIndex < nodes.size && (nodes[startIndex].text.trim() in listOf("1", "-", "+", "2", "3") || (nodes[startIndex].text.trim().matches(Regex("^\\d+$")) && nodes[startIndex].text.length < 3))) {
                 startIndex++
             }
@@ -135,14 +134,15 @@ class DealScannerService : AccessibilityService() {
                     val bottomY = getRect(nodes[currencyIndex].node).bottom
                     val texts = chunk.map { it.text.trim() }
                     
-                    // استخراج الأرقام فقط (القروش والجنيهات)
+                    // طباعة النصوص الخام لمعرفة الترتيب الحقيقي للأرقام في الواجهة (مهم جداً للتتبع)
+                    addLog("🧾 Cart raw: " + texts.joinToString(" | "))
+
                     val numbers = texts.filter { it.matches(Regex("^\\d+$")) }
 
                     if (numbers.size >= 2) {
                         var oldPrice = 0.0
                         var newPrice = 0.0
 
-                        // ترتيب قراءة العناصر في الواجهة العربية: قرش جديد -> جنيه جديد -> قرش قديم -> جنيه قديم
                         if (numbers.size >= 4) {
                             val oldPound = numbers[numbers.size - 1]
                             val oldPiaster = numbers[numbers.size - 2]
@@ -152,7 +152,6 @@ class DealScannerService : AccessibilityService() {
                             oldPrice = "$oldPound.$oldPiaster".toDoubleOrNull() ?: 0.0
                             newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
                         } else {
-                            // في حالة عدم وجود سعر قديم إطلاقاً
                             val newPound = numbers[numbers.size - 1]
                             val newPiaster = numbers[numbers.size - 2]
                             newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
@@ -168,7 +167,6 @@ class DealScannerService : AccessibilityService() {
                             name += " (" + texts[1].replace(Regex("^\\d+\\s*-\\s*"), "").trim() + ")"
                         }
 
-                        // إذا كان السعر القديم مخفياً، استنتج الخصم من الداتا الملتقطة سابقاً من صفحة العروض
                         if (discount == 0) {
                             val bestMatch = deals.maxByOrNull { deal ->
                                 val words = deal.originalName.split(" ").filter { it.length > 2 }
@@ -196,33 +194,6 @@ class DealScannerService : AccessibilityService() {
         return products
     }
 
-    private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, previousSignature: String, sentProducts: Set<String>): Boolean {
-        val metrics = resources.displayMetrics
-        // تحديد نقطة قص الصورة (20%) + مساحة أمان صغيرة لتجنب القطع
-        val targetTopY = metrics.heightPixels * 0.22f 
-
-        val nextProduct = parsedProducts.firstOrNull { 
-            !sentProducts.contains(it.textDescription.substringBefore(" ب ").trim()) 
-        }
-
-        val startY = nextProduct?.topY?.toFloat() ?: (metrics.heightPixels * 0.75f)
-
-        if (startY > targetTopY) {
-            val startFactor = (startY / metrics.heightPixels).coerceAtMost(0.85f)
-            val endFactor = 0.22f // السحب سيقف بالضبط أسفل خط قص الصورة
-            swipeUp(startFactor, endFactor, 1600L)
-        } else {
-            swipeUp(0.75f, 0.22f, 1600L)
-        }
-
-        repeat(10) {
-            Thread.sleep(300)
-            val newSignature = cartScreenSignature(cartVisibleNodes())
-            if (newSignature.isNotBlank() && newSignature != previousSignature) return true
-        }
-        return false
-    }
-
     @TargetApi(30)
     private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
         addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
@@ -247,8 +218,9 @@ class DealScannerService : AccessibilityService() {
             val sentProducts = mutableSetOf<String>()
             val metrics = resources.displayMetrics
             
-            val visibleTop = (metrics.heightPixels * 0.20).toInt()
-            val visibleBottom = (metrics.heightPixels * 0.82).toInt()
+            // تعديل مساحة الظهور لتشمل نسبة أكبر من الشاشة استناداً لتحليل الخبير
+            val visibleTop = (metrics.heightPixels * 0.16).toInt()
+            val visibleBottom = (metrics.heightPixels * 0.92).toInt()
 
             while (loopCount < 20) {
                 loopCount++
@@ -269,31 +241,47 @@ class DealScannerService : AccessibilityService() {
 
                 val parsedProducts = parseRabbitCartProducts(visibleNodes, deals)
                 
-                // فلترة المنتجات لتشمل فقط المنتجات المكتملة الظهور (بين خط القص العلوي والسفلي)
-                val fullyVisibleProducts = parsedProducts.filter { product ->
-                    val uniqueKey = product.textDescription.substringBefore(" ب ").trim()
-                    !sentProducts.contains(uniqueKey) && product.topY >= (visibleTop - 20) && product.bottomY <= (visibleBottom + 20)
+                // استبعاد المنتجات المرسلة مسبقاً
+                val notSentProducts = parsedProducts.filter { product ->
+                    val key = product.textDescription.substringBefore(" ب ").trim()
+                    !sentProducts.contains(key)
                 }
 
-                if (fullyVisibleProducts.isEmpty()) {
-                    addLog("⚠️ لم يتم العثور على منتجات مكتملة الظهور للالتقاط. جاري السحب للأسفل...")
+                // فلترة مرنة جداً لتحديد المنتجات المكتملة الظهور
+                val fullyVisibleProducts = notSentProducts.filter { product ->
+                    product.topY >= (visibleTop - 120) && product.bottomY <= (visibleBottom + 180)
+                }
+
+                // تفعيل خطة بديلة (Fallback) إذا كانت شروط الظهور لا تتطابق مع الواقع
+                val currentProducts = if (fullyVisibleProducts.isNotEmpty()) {
+                    fullyVisibleProducts
+                } else {
+                    if (notSentProducts.isNotEmpty()) {
+                        addLog("⚠️ لا توجد منتجات مكتملة ضمن الحدود؛ سيتم استخدام المنتجات المقروءة كحل احتياطي.")
+                        notSentProducts.take(5)
+                    } else {
+                        emptyList()
+                    }
+                }
+
+                if (currentProducts.isEmpty()) {
+                    addLog("⚠️ لم يتم العثور على منتجات جديدة للالتقاط. جاري السحب للأسفل...")
                     lastSignature = signature
                     if (!smartScrollRabbitCart(parsedProducts, signature, sentProducts)) break
                     continue
                 }
 
-                val currentBatchText = fullyVisibleProducts.map { it.textDescription }
-                fullyVisibleProducts.forEach { 
-                    sentProducts.add(it.textDescription.substringBefore(" ب ").trim()) 
-                }
-
+                val currentBatchText = currentProducts.map { it.textDescription }
+                
                 val bitmap = takeScreenshotSync()
                 var imageBytes: ByteArray? = null
 
                 if (bitmap != null) {
+                    addLog("📐 حجم الصورة قبل القص: ${bitmap.width}x${bitmap.height}")
                     try {
-                        val topCrop = (bitmap.height * 0.20).toInt()
-                        val bottomCrop = (bitmap.height * 0.18).toInt()
+                        // قص أقل حدة بناءً على توصية الخبير للحفاظ على تفاصيل الواجهة
+                        val topCrop = (bitmap.height * 0.12).toInt()
+                        val bottomCrop = (bitmap.height * 0.10).toInt()
                         val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
                         val stream = ByteArrayOutputStream()
                         croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
@@ -303,16 +291,30 @@ class DealScannerService : AccessibilityService() {
                     } catch (e: Exception) {
                         addLog("❌ خطأ قص الصورة: ${e.message}")
                     }
+                } else {
+                    addLog("❌ Screenshot رجع null؛ لن يتم إرسال صورة.")
                 }
 
                 val prefix = "عروض ممتازة علي ابلكيشن رابيت\n\n"
                 val caption = (prefix + currentBatchText.joinToString("\n\n")).take(1020)
 
+                // الاعتماد الفعلي وإضافة المنتجات للمرسل يجب أن يحدث فقط بعد نجاح التليجرام
+                var telegramSent = false
                 if (imageBytes != null) {
                     addLog("📸 تم التقاط صورة السلة. جاري الإرسال...")
-                    sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+                    telegramSent = sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
                 } else {
-                    sendTelegramMessage(token, chatId, caption)
+                    addLog("⚠️ فشل التقاط الصورة، جاري إرسال تقرير نصي...")
+                    telegramSent = sendTelegramMessage(token, chatId, caption)
+                }
+
+                if (telegramSent) {
+                    currentProducts.forEach { 
+                        sentProducts.add(it.textDescription.substringBefore(" ب ").trim()) 
+                    }
+                    addLog("✅ تم اعتماد ${currentProducts.size} منتجات بعد نجاح الإرسال.")
+                } else {
+                    addLog("❌ فشل الإرسال؛ لن يتم اعتبار المنتجات مرسلة.")
                 }
 
                 lastSignature = signature
@@ -375,21 +377,150 @@ class DealScannerService : AccessibilityService() {
 
             val prefix = if (loopCountBF == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
             val caption = (prefix + currentBatch.joinToString("\n\n") { it.dealText }).take(1020)
-
+            
+            var telegramSent = false
             if (imageBytes != null) {
                 addLog("📸 تم التقاط صورة بريدفاست. جاري الإرسال...")
-                sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+                telegramSent = sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
             } else {
-                sendTelegramMessage(token, chatId, caption)
+                telegramSent = sendTelegramMessage(token, chatId, caption)
             }
 
-            currentBatch.forEach { it.isAssigned = true }
+            if(telegramSent) {
+                currentBatch.forEach { it.isAssigned = true }
+            }
+            
             lastSignatureBF = signature
 
             if (deals.any { !it.isAssigned }) {
                 if (!moveCartAndWait(signature)) break
             }
         }
+    }
+
+    private fun sendTelegramPhotoMultipart(token: String, chatId: String, imageBytes: ByteArray, caption: String): Boolean {
+        var connection: HttpURLConnection? = null
+        try {
+            if (token.isBlank() || chatId.isBlank()) {
+                addLog("❌ Telegram: التوكن أو Chat ID فارغ، راجع الإعدادات.")
+                return false
+            }
+            
+            addLog("📤 Telegram: جاري رفع صورة السلة للتليجرام (حجم التقرير: ${caption.length} حرف)...")
+
+            val boundary = "Boundary-${System.currentTimeMillis()}"
+            val url = URL("https://api.telegram.org/bot${token.trim()}/sendPhoto")
+            connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            
+            val outputStream = DataOutputStream(connection.outputStream)
+            
+            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n")
+            outputStream.write((chatId.trim() + "\r\n").toByteArray(Charsets.UTF_8))
+            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n")
+            outputStream.write((caption + "\r\n").toByteArray(Charsets.UTF_8))
+            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"reply_markup\"\r\n\r\n")
+            outputStream.write((replyMarkup + "\r\n").toByteArray(Charsets.UTF_8))
+            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"cart.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
+            outputStream.write(imageBytes)
+            outputStream.writeBytes("\r\n--$boundary--\r\n")
+            outputStream.flush()
+            outputStream.close()
+            
+            val responseCode = connection.responseCode
+            val responseText = try {
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.use { it.readText() } ?: ""
+            } catch (_: Exception) { "No response text" }
+            
+            if (responseCode in 200..299) {
+                addLog("✅ Telegram: تم النشر بنجاح! (HTTP $responseCode)")
+                return true
+            } else {
+                addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
+                return false
+            }
+        } catch (e: Exception) { 
+            addLog("❌ Telegram Exception: ${e.message}") 
+            return false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private fun sendTelegramMessage(token: String, chatId: String, text: String): Boolean {
+        var connection: HttpURLConnection? = null
+        try {
+            addLog("📤 Telegram: جاري إرسال تقرير نصي بديل (بدون صورة)...")
+            val url = URL("https://api.telegram.org/bot$token/sendMessage")
+            connection = url.openConnection() as HttpURLConnection
+            connection.requestMethod = "POST"
+            connection.connectTimeout = 15000
+            connection.readTimeout = 15000
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            
+            val body = buildString {
+                append("chat_id=").append(URLEncoder.encode(chatId, "UTF-8"))
+                append("&text=").append(URLEncoder.encode(text, "UTF-8"))
+                append("&reply_markup=").append(URLEncoder.encode(replyMarkup, "UTF-8"))
+            }
+            
+            connection.outputStream.use { output ->
+                output.write(body.toByteArray(Charsets.UTF_8))
+                output.flush()
+            }
+            
+            val responseCode = connection.responseCode
+            val responseText = try {
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.use { it.readText() } ?: ""
+            } catch (_: Exception) { "" }
+            
+            if (responseCode in 200..299) {
+                addLog("✅ Telegram: تم إرسال التقرير النصي بنجاح (HTTP $responseCode).")
+                return true
+            } else {
+                addLog("❌ Telegram text failed: HTTP $responseCode - ${responseText.take(250)}")
+                return false
+            }
+        } catch (e: Exception) {
+            addLog("❌ Telegram text exception: ${e.message}")
+            return false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, previousSignature: String, sentProducts: Set<String>): Boolean {
+        val metrics = resources.displayMetrics
+        // تحديد نقطة قص الصورة (20%) + مساحة أمان صغيرة لتجنب القطع
+        val targetTopY = metrics.heightPixels * 0.22f 
+
+        val nextProduct = parsedProducts.firstOrNull { 
+            !sentProducts.contains(it.textDescription.substringBefore(" ب ").trim()) 
+        }
+
+        val startY = nextProduct?.topY?.toFloat() ?: (metrics.heightPixels * 0.75f)
+
+        if (startY > targetTopY) {
+            val startFactor = (startY / metrics.heightPixels).coerceAtMost(0.85f)
+            val endFactor = 0.22f // السحب سيقف بالضبط أسفل خط قص الصورة
+            swipeUp(startFactor, endFactor, 1600L)
+        } else {
+            swipeUp(0.75f, 0.22f, 1600L)
+        }
+
+        repeat(10) {
+            Thread.sleep(300)
+            val newSignature = cartScreenSignature(cartVisibleNodes())
+            if (newSignature.isNotBlank() && newSignature != previousSignature) return true
+        }
+        return false
     }
 
 
@@ -1221,97 +1352,7 @@ class DealScannerService : AccessibilityService() {
         return bitmap
     }
 
-    private fun sendTelegramPhotoMultipart(token: String, chatId: String, imageBytes: ByteArray, caption: String) {
-        var connection: HttpURLConnection? = null
-        try {
-            if (token.isBlank() || chatId.isBlank()) {
-                addLog("❌ Telegram: التوكن أو Chat ID فارغ، راجع الإعدادات.")
-                return
-            }
-            
-            addLog("📤 Telegram: جاري رفع صورة السلة للتليجرام (حجم التقرير: ${caption.length} حرف)...")
-
-            val boundary = "Boundary-${System.currentTimeMillis()}"
-            val url = URL("https://api.telegram.org/bot${token.trim()}/sendPhoto")
-            connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
-            
-            val outputStream = DataOutputStream(connection.outputStream)
-            
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n")
-            outputStream.write((chatId.trim() + "\r\n").toByteArray(Charsets.UTF_8))
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n")
-            outputStream.write((caption + "\r\n").toByteArray(Charsets.UTF_8))
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"reply_markup\"\r\n\r\n")
-            outputStream.write((replyMarkup + "\r\n").toByteArray(Charsets.UTF_8))
-            outputStream.writeBytes("--$boundary\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"cart.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n")
-            outputStream.write(imageBytes)
-            outputStream.writeBytes("\r\n--$boundary--\r\n")
-            outputStream.flush()
-            outputStream.close()
-            
-            val responseCode = connection.responseCode
-            val responseText = try {
-                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
-                stream?.bufferedReader()?.use { it.readText() } ?: ""
-            } catch (_: Exception) { "No response text" }
-            
-            if (responseCode in 200..299) {
-                addLog("✅ Telegram: تم النشر بنجاح! (HTTP $responseCode)")
-            } else {
-                addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
-            }
-        } catch (e: Exception) { 
-            addLog("❌ Telegram Exception: ${e.message}") 
-        } finally {
-            connection?.disconnect()
-        }
-    }
-
-    private fun sendTelegramMessage(token: String, chatId: String, text: String) {
-        var connection: HttpURLConnection? = null
-        try {
-            addLog("📤 Telegram: جاري إرسال تقرير نصي بديل (بدون صورة)...")
-            val url = URL("https://api.telegram.org/bot$token/sendMessage")
-            connection = url.openConnection() as HttpURLConnection
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 15000
-            connection.readTimeout = 15000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-            
-            val body = buildString {
-                append("chat_id=").append(URLEncoder.encode(chatId, "UTF-8"))
-                append("&text=").append(URLEncoder.encode(text, "UTF-8"))
-                append("&reply_markup=").append(URLEncoder.encode(replyMarkup, "UTF-8"))
-            }
-            
-            connection.outputStream.use { output ->
-                output.write(body.toByteArray(Charsets.UTF_8))
-                output.flush()
-            }
-            
-            val responseCode = connection.responseCode
-            val responseText = try {
-                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
-                stream?.bufferedReader()?.use { it.readText() } ?: ""
-            } catch (_: Exception) { "" }
-            
-            if (responseCode in 200..299) {
-                addLog("✅ Telegram: تم إرسال التقرير النصي بنجاح (HTTP $responseCode).")
-            } else {
-                addLog("❌ Telegram text failed: HTTP $responseCode - ${responseText.take(250)}")
-            }
-        } catch (e: Exception) {
-            addLog("❌ Telegram text exception: ${e.message}")
-        } finally {
-            connection?.disconnect()
-        }
-    }
+    
 
     private fun swipeUp(startFactor: Float, endFactor: Float, durationMs: Long) {
         val metrics = resources.displayMetrics
