@@ -105,9 +105,11 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
+
     private fun isRabbitInArabic(): Boolean {
         val root = rootInActiveWindow ?: return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
         
+        // فحص فعلي للنصوص الموجودة على الشاشة لتحديد لغة التطبيق الداخلية
         val isArabic = findNodeByText(root, "سوبرماركت") != null || 
                        findNodeByText(root, "الكيس") != null || 
                        findNodeByText(root, "عروض") != null || 
@@ -124,13 +126,19 @@ class DealScannerService : AccessibilityService() {
 
         if (isEnglish) return false
 
+        // الخطة البديلة: الاعتماد على لغة النظام إذا كانت الشاشة خالية من النصوص السابقة
         return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
     }
     
+    // ==========================================
+    // دوال مساعدة خاصة بتنقل واستخراج بيانات رابيت
+    // ==========================================
     private enum class RabbitBottomTab { CART, PROMOTIONS }
 
     private fun tapRabbitBottomTab(tab: RabbitBottomTab): Boolean {
         val metrics = resources.displayMetrics
+        
+        // استخدام الدالة الذكية لمعرفة لغة واجهة التطبيق فعلياً بدلاً من لغة الهاتف
         val isRtl = isRabbitInArabic() 
         
         val x = when (tab) {
@@ -185,6 +193,7 @@ class DealScannerService : AccessibilityService() {
         val normalized = normalizeRabbitText(rawText)
         if (!normalized.contains(Regex("""(?i)\bEGP\b|جنيه"""))) return null
         
+        // استخراج جميع الأرقام التي تبدو كأسعار
         val priceTokens = Regex("""\d+(?:[.,]\d{1,2})?""").findAll(normalized)
             .map { it.value.replace(",", ".") }.toList()
         
@@ -193,6 +202,7 @@ class DealScannerService : AccessibilityService() {
         val combinedPrices = mutableListOf<Double>()
         var i = 0
         while(i < priceTokens.size) {
+            // معالجة حالة رابيت التي تفصل القروش بمسافة (مثال: 100 00)
             if (i + 1 < priceTokens.size && priceTokens[i+1].length == 2 && !priceTokens[i].contains(".")) {
                 val combined = "${priceTokens[i]}.${priceTokens[i+1]}".toDoubleOrNull()
                 if (combined != null) combinedPrices.add(combined)
@@ -204,6 +214,7 @@ class DealScannerService : AccessibilityService() {
             }
         }
         
+        // السعر الحالي (الخصم) هو دائماً الرقم الأصغر
         val minPrice = combinedPrices.minOrNull()
         return minPrice?.toString()
     }
@@ -214,14 +225,11 @@ class DealScannerService : AccessibilityService() {
         val rawList = texts.map { it.trim() }.filter { it.isNotEmpty() }
         val combinedText = rawList.joinToString(" ")
 
-        // 1. طباعة النص الخام القادم من الكارت لمعرفة ما يقرأه البوت
         addLog("🔍 [تحليل كارت رابيت] النص الخام: $combinedText")
 
-        // 2. دمج القروش مع الجنيهات (تحويل 57 00 إلى 57.00)
         val normalizedForPrice = combinedText.replace(Regex("""(\d+)\s+(\d{2})\b"""), "$1.$2")
         val allNumbers = Regex("""\d+(?:\.\d{1,2})?""").findAll(normalizedForPrice).map { it.value.toDouble() }.toList().sortedDescending()
 
-        // 3. الذكاء الرياضي: إيجاد السعرين اللذين يحققان نسبة الخصم المكتوبة على البادج
         var actualNewPrice: Double? = null
         var actualOldPrice: Double? = null
         
@@ -231,7 +239,6 @@ class DealScannerService : AccessibilityService() {
                 val newP = allNumbers[j]
                 if (oldP == 0.0) continue
                 val calcDiscount = Math.round(((oldP - newP) / oldP) * 100).toInt()
-                // السماح بنسبة خطأ 2% في تقريب الكسور
                 if (Math.abs(calcDiscount - discountPercent) <= 2) {
                     actualNewPrice = newP
                     actualOldPrice = oldP
@@ -243,22 +250,19 @@ class DealScannerService : AccessibilityService() {
 
         val finalSalePrice = actualNewPrice?.let { if (it % 1.0 == 0.0) it.toInt().toString() else it.toString() }
 
-        // 4. استخراج الوحدة
         val unitRegex = Regex("(?i)\\b\\d+(?:[.,]\\d+)?\\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\\b")
         val unit = unitRegex.find(combinedText)?.value?.trim()
 
-        // 5. تنظيف اسم المنتج تماماً من الأصفار والأسعار والكلمات الزائدة
         var cleanName = combinedText
-            .replace(Regex("""\b\d+\s+\d{2}\b"""), "") // حذف أسعار مثل 39 50
-            .replace(Regex("""\b(00)\b"""), "") // حذف أي أصفار يتيمة
-            .replace(unitRegex, "") // حذف الوحدة
+            .replace(Regex("""\b\d+\s+\d{2}\b"""), "") 
+            .replace(Regex("""\b(00)\b"""), "") 
+            .replace(unitRegex, "") 
             .replace(Regex("""(?i)\b(egp|جنيه|add|اضف|أضف|favorite|مفضلة|%|٪|-)\b"""), "")
             .replace("+", "")
             .replace("\n", " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
             
-        // إزالة الأرقام الصريحة التي تعود للأسعار إذا تبقت
         if (actualNewPrice != null) cleanName = cleanName.replace(actualNewPrice.toString(), "").replace(actualNewPrice.toInt().toString(), "")
         if (actualOldPrice != null) cleanName = cleanName.replace(actualOldPrice.toString(), "").replace(actualOldPrice.toInt().toString(), "")
 
@@ -290,6 +294,7 @@ class DealScannerService : AccessibilityService() {
             return null
         }
 
+        // تحديد لغة التطبيق لضبط الإحداثيات المتوقعة
         val isArabic = isRabbitInArabic()
         val expectedX = if (isArabic) cardRect.left + (cardRect.width() * 0.20f) else cardRect.left + (cardRect.width() * 0.80f)
         val expectedY = cardRect.top + (cardRect.height() * 0.43f)
@@ -315,8 +320,12 @@ class DealScannerService : AccessibilityService() {
                 val centerXRatio = (rect.centerX() - cardRect.left).toFloat() / cardRect.width().toFloat()
                 val centerYRatio = (rect.centerY() - cardRect.top).toFloat() / cardRect.height().toFloat()
 
+                // دعم الكلمات العربية (أضف/اضف) بجانب العلامات
                 val isTextAddButton = text == "+" || desc == "+" || combined == "add" || combined.contains("add to cart") || combined.contains("أضف") || combined.contains("اضف")
+                
+                // تحديد نطاق البحث الهندسي: (0.02 إلى 0.42 لليسار) أو (0.58 إلى 0.98 لليمين)
                 val isValidXRatio = if (isArabic) centerXRatio in 0.02f..0.42f else centerXRatio in 0.58f..0.98f
+                
                 val isGeometryAddButton = node.isClickable && combined.isBlank() && width in 40f..250f && height in 40f..250f &&
                                           aspectRatio in 0.65f..1.45f && isValidXRatio && centerYRatio in 0.18f..0.72f
 
@@ -337,6 +346,18 @@ class DealScannerService : AccessibilityService() {
         return bestCandidate
     }
 
+    private fun extractAllTextsFromCard(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
+        if (node == null) return
+        val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+        if (t.isNotEmpty()) texts.add(t)
+        for (i in 0 until node.childCount) {
+            extractAllTextsFromCard(node.getChild(i), texts)
+        }
+    }
+
+    // ==========================================
+    // منطق تطبيق رابيت (Rabbit Automation)
+    // ==========================================
     private fun runRabbitAutomation(prefs: SharedPreferences) {
         addLog("⏳ تم فتح رابيت.. ننتظر 35 ثانية للتحميل...")
         Thread.sleep(35000)
@@ -349,7 +370,7 @@ class DealScannerService : AccessibilityService() {
             Thread.sleep(6000)
         }
 
-        addLog("🗑️ Rabbit: جاري فتح السلة لم مسح المنتجات القديمة...")
+        addLog("🗑️ Rabbit: جاري فتح السلة لمسح المنتجات القديمة...")
         if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
             addLog("❌ Rabbit: فشل إرسال نقرة السلة.")
             return
@@ -411,6 +432,7 @@ class DealScannerService : AccessibilityService() {
         val safeTop = metrics.heightPixels * 0.15f
         val safeBottom = metrics.heightPixels * 0.82f 
         
+        var noAddPasses = 0
         while (totalScrolls < 500) {
             val visibleNodes = mutableListOf<NodeData>()
             extractNodes(rootInActiveWindow, visibleNodes, safeTop, safeBottom)
@@ -419,7 +441,9 @@ class DealScannerService : AccessibilityService() {
             val productAdded = analyzeRabbitDeals(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
             
             if (productAdded) {
+                noAddPasses = 0
                 addLog("🔄 Rabbit: تمت الإضافة، ننتظر استقرار الشاشة...")
+                // تمت زيادة وقت الانتظار هنا لـ 2.5 ثانية لضمان انتهاء حركة شريط (Recommended for you) تماماً
                 Thread.sleep(2500)
                 continue
             }
@@ -481,10 +505,11 @@ class DealScannerService : AccessibilityService() {
             val cardKey = "${cardRect.left}:${cardRect.top}:${cardRect.right}:${cardRect.bottom}"
             if (!processedCards.add(cardKey)) continue
             
-            // التعديل هنا: نمرر نسبة الخصم ليتمكن البوت من حساب السعر الصحيح رياضياً
             val productInfo = extractRabbitProductInfo(productCard, discountPercent)
             if (productInfo == null || productInfo.name.length < 3) continue
             
+            addLog("🔍 [Rabbit] مطابق للخصم: ${productInfo.name} | السعر: ${productInfo.salePrice} | الخصم: $discountPercent%")
+
             val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
             if (processed.contains(productKey)) continue
             
@@ -537,6 +562,10 @@ class DealScannerService : AccessibilityService() {
         return false
     }
 
+    
+    // ==========================================
+    // منطق تطبيق بريدفاست القديم (Breadfast Automation)
+    // ==========================================
     private fun runBreadfastAutomation(prefs: SharedPreferences) {
         addLog("⏳ تم فتح بريدفاست.. ننتظر 15 ثانية للتحميل...")
         Thread.sleep(15000) 
@@ -618,6 +647,10 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
+    // ==========================================
+    // الدوال المشتركة (Shared Helpers)
+    // ==========================================
+    
     private fun loadHistoryMap(prefs: SharedPreferences): MutableMap<String, Long> {
         val historyStr = prefs.getString("PRODUCTS_HISTORY", "") ?: ""
         val historyMap = mutableMapOf<String, Long>()
@@ -766,10 +799,10 @@ class DealScannerService : AccessibilityService() {
         } catch (e: Exception) { return false }
     }
 
-    
-
-    
-
+    // ===========================
+    // Cart report helpers only
+    // هذه الدوال لا تتعامل مع صفحة العروض أو زر + أو زر -.
+    // ===========================
     private fun normalizeForCartMatch(text: String): String {
         return text
             .lowercase(java.util.Locale.ROOT)
@@ -851,6 +884,7 @@ class DealScannerService : AccessibilityService() {
     }
 
     private fun moveCartAndWait(previousSignature: String): Boolean {
+        // يبدأ السحب في قائمة المنتجات وليس فوق بانر التوصيل السفلي.
         swipeUp(0.72f, 0.30f, 1100L)
 
         repeat(10) {
@@ -881,28 +915,47 @@ class DealScannerService : AccessibilityService() {
 
         if (deals.isEmpty()) return
 
+        // هذا التعديل يخص التقرير فقط؛ لا يغيّر أي منطق لإضافة العروض.
         deals.forEach { it.isAssigned = false }
+
         var loopCount = 0
         var lastSignature = ""
         var unchangedScreens = 0
 
         while (deals.any { !it.isAssigned } && loopCount < 20) {
             loopCount++
+
             val visibleNodes = cartVisibleNodes()
             val signature = cartScreenSignature(visibleNodes)
-            
-            // إضافة Log لمحتوى السلة المرئي للمطابقة
-            val visibleTexts = visibleNodes.map { it.text.trim() }.filter { it.isNotEmpty() && !it.matches(Regex("\\d+")) }
-            addLog("🛒 [نصوص السلة حالياً]: ${visibleTexts.take(8).joinToString(" | ")}")
 
-            if (signature.isBlank()) break
+            if (appType == "RABBIT") {
+                val screenTexts = visibleNodes.map { it.text.replace("\n", " ").trim() }.filter { it.isNotBlank() && !it.matches(Regex("\\d+")) }
+                addLog("🛒 [Rabbit] نصوص شاشة السلة: ${screenTexts.take(8).joinToString(" | ")}")
+            } else {
+                val visibleTexts = visibleNodes.map { it.text.trim() }.filter { it.isNotEmpty() && !it.matches(Regex("\\d+")) }
+                addLog("🛒 [نصوص السلة حالياً]: ${visibleTexts.take(8).joinToString(" | ")}")
+            }
+
+            if (signature.isBlank()) {
+                addLog("⚠️ تعذر قراءة عناصر السلة في الدورة $loopCount.")
+                break
+            }
+
+            // لا ترسل Screenshot ثانية عندما لم تتحرك السلة فعلياً.
             if (signature == lastSignature) {
                 unchangedScreens++
-                if (unchangedScreens >= 2 || !moveCartAndWait(signature)) break
+                addLog("⚠️ السلة لم تتغير؛ لن يتم إرسال Screenshot مكررة.")
+
+                if (unchangedScreens >= 2 || !moveCartAndWait(signature)) {
+                    addLog("🏁 لا توجد صفحة جديدة في السلة لإرسالها.")
+                    break
+                }
                 continue
             }
+
             unchangedScreens = 0
 
+            // نطابق المنتجات الظاهرة ثم نرتبها رأسياً كما تظهر في Screenshot.
             val currentBatch = deals
                 .asSequence()
                 .filter { !it.isAssigned }
@@ -920,9 +973,14 @@ class DealScannerService : AccessibilityService() {
                 .map { it.deal }
                 .toList()
 
+            // لا تستخدم fallback عشوائياً؛ لا نريد وصفاً لا يخص الصورة.
             if (currentBatch.isEmpty()) {
+                addLog("⚠️ لا توجد مطابقة موثوقة لمنتجات الصورة الحالية؛ لن يتم إرسال وصف خاطئ.")
                 lastSignature = signature
-                if (!moveCartAndWait(signature)) break
+
+                if (!moveCartAndWait(signature)) {
+                    break
+                }
                 continue
             }
 
@@ -933,39 +991,63 @@ class DealScannerService : AccessibilityService() {
                 try {
                     val topCrop = (bitmap.height * 0.20).toInt()
                     val bottomCrop = (bitmap.height * 0.18).toInt()
-                    val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
+                    val croppedBitmap = Bitmap.createBitmap(
+                        bitmap,
+                        0,
+                        topCrop,
+                        bitmap.width,
+                        bitmap.height - topCrop - bottomCrop
+                    )
                     val stream = ByteArrayOutputStream()
                     croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                     imageBytes = stream.toByteArray()
                     croppedBitmap.recycle()
                     bitmap.recycle()
-                } catch (e: Exception) { }
+                } catch (e: Exception) {
+                    addLog("❌ خطأ في معالجة Screenshot: ${e.message}")
+                }
             }
 
             val prefix = if (appType == "RABBIT") {
-                if (loopCount == 1) "عروض ممتازة على Rabbit 🐰\n\n" else "وعروض Rabbit إضافية 🐰\n\n"
+                if (loopCount == 1) {
+                    "عروض ممتازة على Rabbit 🐰\n\n"
+                } else {
+                    "وعروض Rabbit إضافية 🐰\n\n"
+                }
             } else {
                 if (loopCount == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
             }
-            
-            val caption = (prefix + currentBatch.joinToString("\n\n") { it.dealText }).take(1020)
+
+            val caption = (
+                prefix + currentBatch.joinToString("\n\n") { it.dealText }
+            ).take(1020)
 
             if (imageBytes != null) {
+                addLog("📸 إرسال صورة بها ${currentBatch.size} منتجات مرتبة حسب السلة...")
                 sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
             } else {
+                addLog("⚠️ Screenshot غير متاحة؛ جاري إرسال النص المطابق للمنتجات المرئية.")
                 sendTelegramMessage(token, chatId, caption)
             }
 
+            // لا نعلّم المنتج كمرسل إلا بعد وضعه في التقرير الحالي.
             currentBatch.forEach { it.isAssigned = true }
             lastSignature = signature
 
             if (deals.any { !it.isAssigned }) {
-                if (!moveCartAndWait(signature)) break
+                if (!moveCartAndWait(signature)) {
+                    addLog("🏁 تعذر الانتقال لعناصر جديدة في السلة.")
+                    break
+                }
             }
+        }
+
+        val unsent = deals.count { !it.isAssigned }
+        if (unsent > 0) {
+            addLog("⚠️ انتهى التقرير وبقي $unsent منتجات لم تطابق السلة بثقة.")
         }
     }
 
-    
     private fun sendChunksAsText(token: String, chatId: String, chunks: List<List<String>>, appType: String = "BREADFAST") {
         for (i in chunks.indices) {
             val prefix = if (appType == "RABBIT") {
@@ -984,6 +1066,7 @@ class DealScannerService : AccessibilityService() {
         val latch = CountDownLatch(1)
         val executor = Executors.newSingleThreadExecutor()
         try {
+            // استدعاء دالة التصوير مباشرة بدون إسنادها لمتغير لأنها Void (Unit)
             takeScreenshot(
                 Display.DEFAULT_DISPLAY,
                 executor,
@@ -1063,6 +1146,7 @@ class DealScannerService : AccessibilityService() {
             if (responseCode in 200..299) {
                 addLog("✅ Telegram: تم رفع الصورة بنجاح.")
             } else {
+                // سيظهر لك سبب الرفض من تليجرام هنا
                 addLog("❌ Telegram Error ($responseCode): ${responseText.take(200)}")
             }
         } catch (e: Exception) { 
