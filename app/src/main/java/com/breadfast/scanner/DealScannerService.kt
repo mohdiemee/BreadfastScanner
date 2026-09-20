@@ -793,9 +793,9 @@ private fun openCartAndSendReport(
 
     if (!appType.equals("RABBIT", ignoreCase = true)) {
         sendBreadfastCartReport(
-            token,
-            chatId,
-            deals
+            token = token,
+            chatId = chatId,
+            deals = deals
         )
         return
     }
@@ -1086,31 +1086,40 @@ private fun openCartAndSendReport(
             }
 
             val sentSuccessfully =
-                if (
-                    imageBytes != null &&
-                        imageBytes.isNotEmpty()
-                ) {
-                    addLog(
-                        "📤 إرسال صورة Telegram..."
-                    )
+                try {
+                    if (
+                        imageBytes != null &&
+                            imageBytes.isNotEmpty()
+                    ) {
+                        addLog(
+                            "📤 إرسال صورة Telegram..."
+                        )
 
-                    sendTelegramPhotoMultipart(
-                        token = token,
-                        chatId = chatId,
-                        imageBytes = imageBytes,
-                        caption = caption
-                    )
-                } else {
-                    addLog(
-                        "📤 لا توجد صورة؛ " +
-                            "إرسال النص كبديل..."
-                    )
+                        sendTelegramPhotoMultipart(
+                            token = token,
+                            chatId = chatId,
+                            imageBytes = imageBytes,
+                            caption = caption
+                        )
+                    } else {
+                        addLog(
+                            "📤 لا توجد صورة؛ " +
+                                "إرسال النص كبديل..."
+                        )
 
-                    sendTelegramMessage(
-                        token = token,
-                        chatId = chatId,
-                        text = caption
+                        sendTelegramMessage(
+                            token = token,
+                            chatId = chatId,
+                            text = caption
+                        )
+                    }
+                } catch (e: Exception) {
+                    addLog(
+                        "❌ خطأ Telegram: " +
+                            "${e.javaClass.simpleName}: " +
+                            "${e.message}"
                     )
+                    false
                 }
 
             if (!sentSuccessfully) {
@@ -1216,6 +1225,8 @@ private fun openCartAndSendReport(
             "${sentProducts.size}/${deals.size} منتجات."
     )
 }
+
+
 @TargetApi(30)
 private fun sendBreadfastCartReport(
     token: String,
