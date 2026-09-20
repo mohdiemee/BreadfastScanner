@@ -25,7 +25,6 @@ import kotlin.concurrent.thread
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 
 
 data class DealData(val originalName: String, val dealText: String, var isAssigned: Boolean = false)
@@ -1240,6 +1239,12 @@ private fun sendBreadfastCartReport(
         val visibleNodes = cartVisibleNodes()
         val signature = cartScreenSignature(visibleNodes)
 
+        addLog(
+            "🔍 Breadfast Cart: دورة=$loopCount, " +
+                "nodes=${visibleNodes.size}, " +
+                "signatureLength=${signature.length}"
+        )
+
         if (signature.isBlank()) {
             addLog("⚠️ Breadfast: الشاشة فارغة.")
             break
@@ -1247,6 +1252,11 @@ private fun sendBreadfastCartReport(
 
         if (signature == lastSignature) {
             unchangedScreens++
+
+            addLog(
+                "⚠️ Breadfast: الشاشة لم تتغير: " +
+                    "$unchangedScreens/3"
+            )
 
             if (unchangedScreens >= 3) {
                 addLog(
@@ -1279,7 +1289,21 @@ private fun sendBreadfastCartReport(
 
             lastSignature = signature
 
-            if (!moveCartAndWait(signature)) {
+            val moved = try {
+                moveCartAndWait(signature)
+            } catch (e: Exception) {
+                addLog(
+                    "❌ Breadfast: خطأ أثناء التمرير: " +
+                        "${e.javaClass.simpleName}: " +
+                        "${e.message}"
+                )
+                false
+            }
+
+            if (!moved) {
+                addLog(
+                    "🏁 Breadfast: تعذر تحريك السلة."
+                )
                 break
             }
 
@@ -1297,10 +1321,22 @@ private fun sendBreadfastCartReport(
                 }
             ).take(1020)
 
+        addLog(
+            "📷 Breadfast: التقاط Screenshot للدفعة " +
+                "${currentBatch.size}..."
+        )
+
+        val bitmap = takeScreenshotSync()
+
         var imageBytes: ByteArray? = null
 
         if (bitmap != null) {
             try {
+                addLog(
+                    "📐 Breadfast Screenshot: " +
+                        "${bitmap.width}x${bitmap.height}"
+                )
+
                 val topCrop =
                     (bitmap.height * 0.10f).toInt()
 
@@ -1308,9 +1344,14 @@ private fun sendBreadfastCartReport(
                     (bitmap.height * 0.08f).toInt()
 
                 val cropHeight =
-                    bitmap.height - topCrop - bottomCrop
+                    bitmap.height -
+                        topCrop -
+                        bottomCrop
 
-                if (cropHeight > 100) {
+                if (
+                    bitmap.width > 100 &&
+                        cropHeight > 100
+                ) {
                     val croppedBitmap =
                         Bitmap.createBitmap(
                             bitmap,
@@ -1329,36 +1370,70 @@ private fun sendBreadfastCartReport(
                         stream
                     )
 
-                    imageBytes = stream.toByteArray()
+                    imageBytes =
+                        stream.toByteArray()
 
                     croppedBitmap.recycle()
-                }
 
-                bitmap.recycle()
+                    addLog(
+                        "🖼️ Breadfast: تم تجهيز الصورة: " +
+                            "${imageBytes.size} bytes"
+                    )
+                } else {
+                    addLog(
+                        "⚠️ Breadfast: أبعاد القص غير صالحة."
+                    )
+                }
             } catch (e: Exception) {
                 addLog(
                     "❌ Breadfast image error: " +
+                        "${e.javaClass.simpleName}: " +
                         "${e.message}"
                 )
+            } finally {
+                if (!bitmap.isRecycled) {
+                    bitmap.recycle()
+                }
             }
+        } else {
+            addLog(
+                "⚠️ Breadfast: Screenshot رجع null."
+            )
         }
 
-        val sent = if (
-            imageBytes != null &&
-                imageBytes!!.isNotEmpty()
-        ) {
-            sendTelegramPhotoMultipart(
-                token,
-                chatId,
-                imageBytes!!,
-                caption
+        val sent = try {
+            if (
+                imageBytes != null &&
+                    imageBytes.isNotEmpty()
+            ) {
+                addLog(
+                    "📤 Breadfast: إرسال صورة Telegram..."
+                )
+
+                sendTelegramPhotoMultipart(
+                    token = token,
+                    chatId = chatId,
+                    imageBytes = imageBytes,
+                    caption = caption
+                )
+            } else {
+                addLog(
+                    "📤 Breadfast: إرسال النص كبديل..."
+                )
+
+                sendTelegramMessage(
+                    token = token,
+                    chatId = chatId,
+                    text = caption
+                )
+            }
+        } catch (e: Exception) {
+            addLog(
+                "❌ Breadfast Telegram error: " +
+                    "${e.javaClass.simpleName}: " +
+                    "${e.message}"
             )
-        } else {
-            sendTelegramMessage(
-                token,
-                chatId,
-                caption
-            )
+            false
         }
 
         if (!sent) {
@@ -1372,16 +1447,43 @@ private fun sendBreadfastCartReport(
             it.isAssigned = true
         }
 
+        addLog(
+            "✅ Breadfast: تم إرسال الدفعة: " +
+                "${currentBatch.size} منتجات."
+        )
+
         lastSignature = signature
 
         if (deals.any { !it.isAssigned }) {
-            if (!moveCartAndWait(signature)) {
+            val moved = try {
+                moveCartAndWait(signature)
+            } catch (e: Exception) {
+                addLog(
+                    "❌ Breadfast: خطأ أثناء التمرير: " +
+                        "${e.javaClass.simpleName}: " +
+                        "${e.message}"
+                )
+                false
+            }
+
+            if (!moved) {
+                addLog(
+                    "🏁 Breadfast: تعذر تحريك السلة."
+                )
                 break
             }
+
+            Thread.sleep(1200)
         }
     }
 
-    addLog("✅ انتهاء تقرير Breadfast.")
+    val assignedCount =
+        deals.count { it.isAssigned }
+
+    addLog(
+        "📊 نتيجة تقرير Breadfast: " +
+            "$assignedCount/${deals.size} منتجات."
+    )
 }
 
     private fun isRabbitInArabic(): Boolean {
@@ -2607,7 +2709,6 @@ private fun takeScreenshotSync(): Bitmap? {
         return null
     }
 
-    override fun onInterrupt() {}
 
     private fun normalizedText(node: AccessibilityNodeInfo): String {
         return (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
