@@ -430,7 +430,6 @@ class DealScannerService : AccessibilityService() {
 }
 
     
-    @TargetApi(30)
 @TargetApi(30)
 private fun openCartAndSendReport(
     token: String,
