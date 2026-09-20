@@ -896,10 +896,10 @@ private fun openCartAndSendReport(
                 break
             }
 
+            val bitmap = takeScreenshotSync()
             var ocrProducts = emptyList<OcrCartProduct>()
 
 val batchText: List<String>
-
 if (bitmap != null) {
     try {
         val ocrText = extractOcrText(bitmap)
@@ -958,9 +958,6 @@ val caption = (
                     "parsed=${parsedProducts.size}"
             )
 
-            val bitmap = takeScreenshotSync()
-
-            var ocrProducts = emptyList<OcrCartProduct>()
 
 if (bitmap != null) {
     val ocrText = extractOcrText(bitmap)
@@ -1244,7 +1241,6 @@ private fun sendBreadfastCartReport(
                 }
             ).take(1020)
 
-        val bitmap = takeScreenshotSync()
         var imageBytes: ByteArray? = null
 
         if (bitmap != null) {
