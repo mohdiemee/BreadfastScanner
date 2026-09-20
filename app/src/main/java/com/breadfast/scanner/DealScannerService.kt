@@ -754,7 +754,9 @@ private fun openCartAndSendReport(
     isCartAlreadyOpen: Boolean = false,
     appType: String = "BREADFAST"
 ) {
-    addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
+    addLog(
+        "🚀 تجهيز تقرير لـ ${deals.size} منتجات..."
+    )
 
     if (token.isBlank()) {
         addLog("❌ BOT_TOKEN فارغ.")
@@ -791,7 +793,11 @@ private fun openCartAndSendReport(
     }
 
     if (!appType.equals("RABBIT", ignoreCase = true)) {
-        sendBreadfastCartReport(token, chatId, deals)
+        sendBreadfastCartReport(
+            token,
+            chatId,
+            deals
+        )
         return
     }
 
@@ -873,8 +879,8 @@ private fun openCartAndSendReport(
         )
 
         if (screenChanged) {
-            val parsedNotSentProducts = parsedProducts
-                .filter { product ->
+            val parsedNotSentProducts =
+                parsedProducts.filter { product ->
                     !sentProducts.contains(
                         uniqueProductKey(
                             product.textDescription
@@ -939,18 +945,28 @@ private fun openCartAndSendReport(
                 )
             }
 
+            val validOcrProducts =
+                ocrProducts.filter { ocrProduct ->
+                    deals.any { deal ->
+                        normalizeProductKey(
+                            deal.originalName
+                        ) == normalizeProductKey(
+                            ocrProduct.name
+                        )
+                    }
+                }
+
             val batchText: List<String> =
                 when {
-                    ocrProducts.isNotEmpty() -> {
-                        ocrProducts
+                    validOcrProducts.isNotEmpty() -> {
+                        validOcrProducts
                             .take(5)
                             .map {
                                 it.toDealText()
                             }
                     }
 
-                    parsedNotSentProducts
-                        .isNotEmpty() -> {
+                    parsedNotSentProducts.isNotEmpty() -> {
                         parsedNotSentProducts
                             .take(5)
                             .map {
@@ -971,8 +987,9 @@ private fun openCartAndSendReport(
                     "⚠️ لم يتم إنشاء نص للدفعة."
                 )
 
-                if (bitmap != null &&
-                    !bitmap.isRecycled
+                if (
+                    bitmap != null &&
+                        !bitmap.isRecycled
                 ) {
                     bitmap.recycle()
                 }
@@ -996,7 +1013,7 @@ private fun openCartAndSendReport(
                 "📝 تجهيز الدفعة: " +
                     "batch=${batchText.size}, " +
                     "parsed=${parsedProducts.size}, " +
-                    "ocr=${ocrProducts.size}"
+                    "ocr=${validOcrProducts.size}"
             )
 
             var imageBytes: ByteArray? = null
@@ -1010,12 +1027,10 @@ private fun openCartAndSendReport(
                     )
 
                     val topCrop =
-                        (bitmap.height * 0.10f)
-                            .toInt()
+                        (bitmap.height * 0.10f).toInt()
 
                     val bottomCrop =
-                        (bitmap.height * 0.08f)
-                            .toInt()
+                        (bitmap.height * 0.08f).toInt()
 
                     val cropHeight =
                         bitmap.height -
@@ -1107,8 +1122,8 @@ private fun openCartAndSendReport(
                 break
             }
 
-            if (ocrProducts.isNotEmpty()) {
-                ocrProducts
+            if (validOcrProducts.isNotEmpty()) {
+                validOcrProducts
                     .take(5)
                     .forEach { product ->
                         sentProducts.add(
@@ -1120,7 +1135,7 @@ private fun openCartAndSendReport(
 
                 addLog(
                     "✅ تم اعتماد منتجات OCR: " +
-                        "${ocrProducts.size}"
+                        "${validOcrProducts.size}"
                 )
             } else if (
                 parsedNotSentProducts.isNotEmpty()
@@ -1202,7 +1217,6 @@ private fun openCartAndSendReport(
             "${sentProducts.size}/${deals.size} منتجات."
     )
 }
-
 @TargetApi(30)
 private fun sendBreadfastCartReport(
     token: String,
