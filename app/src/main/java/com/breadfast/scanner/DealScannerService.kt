@@ -190,16 +190,32 @@ class DealScannerService : AccessibilityService() {
 
     private fun extractRabbitSalePrice(rawText: String): String? {
         val normalized = normalizeRabbitText(rawText)
-        val currencyIndex = Regex("""(?i)\bEGP\b|جنيه""").find(normalized)?.range?.first ?: return null
-        val afterCurrency = normalized.substring(currencyIndex)
-        val priceTokens = Regex("""\d+(?:[.,]\d{1,2})?""").findAll(afterCurrency)
+        if (!normalized.contains(Regex("""(?i)\bEGP\b|جنيه"""))) return null
+        
+        // استخراج جميع الأرقام التي تبدو كأسعار
+        val priceTokens = Regex("""\d+(?:[.,]\d{1,2})?""").findAll(normalized)
             .map { it.value.replace(",", ".") }.toList()
         
         if (priceTokens.isEmpty()) return null
-        val first = priceTokens[0]
-        if (first.contains(".")) return first
-        if (priceTokens.size >= 2 && priceTokens[1].length == 2) return "$first.${priceTokens[1]}"
-        return first
+        
+        val combinedPrices = mutableListOf<Double>()
+        var i = 0
+        while(i < priceTokens.size) {
+            // معالجة حالة رابيت التي تفصل القروش بمسافة (مثال: 100 00)
+            if (i + 1 < priceTokens.size && priceTokens[i+1].length == 2 && !priceTokens[i].contains(".")) {
+                val combined = "${priceTokens[i]}.${priceTokens[i+1]}".toDoubleOrNull()
+                if (combined != null) combinedPrices.add(combined)
+                i += 2
+            } else {
+                val single = priceTokens[i].toDoubleOrNull()
+                if (single != null) combinedPrices.add(single)
+                i++
+            }
+        }
+        
+        // السعر الحالي (الخصم) هو دائماً الرقم الأصغر
+        val minPrice = combinedPrices.minOrNull()
+        return minPrice?.toString()
     }
 
     private fun extractRabbitProductInfo(cardNode: AccessibilityNodeInfo): RabbitProductInfo? {
@@ -208,23 +224,25 @@ class DealScannerService : AccessibilityService() {
         val rawText = normalizeRabbitText(texts.distinct().joinToString(" "))
         if (rawText.isBlank()) return null
         
-        val unitRegex = Regex("""(?i)\b\d+(?:[.,]\d+)?\s*(?:kg|gm|g|ml|l|pcs?|pc)\b""")
+        // دعم شامل للوحدات الإنجليزية والعربية
+        val unitRegex = Regex("""(?i)\b\d+(?:[.,]\d+)?\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\b""")
         val unit = unitRegex.find(rawText)?.value?.replace(",", ".")?.trim()
         
         val beforeCurrency = Regex("""(?i)\bEGP\b|جنيه""").find(rawText)
             ?.let { rawText.substring(0, it.range.first) } ?: rawText
             
         var name = beforeCurrency
-            .replace(Regex("""^-\s*\d{1,2}%"""), "")
-            .replace(Regex("""(?i)\badd\b"""), "")
-            .replace(Regex("""(?i)\bfavorite\b"""), "")
+            .replace(Regex("""[-]?\s*\d{1,2}\s*[%٪]-?"""), "") 
+            .replace(Regex("""(?i)\badd\b|أضف|اضف"""), "")
+            .replace(Regex("""(?i)\bfavorite\b|مفضلة"""), "")
             .replace(Regex("""\+"""), "")
             .replace(unitRegex, "")
-            .replace(Regex("""\b\d+(?:[.,]\d+)?\b"""), "")
+            .replace(Regex("""\b\d+(?:[.,]\d+)?\b"""), "") 
             .replace(Regex("\\s+"), " ")
             .trim()
             
         name = name.replace("EGP", "", ignoreCase = true)
+            .replace("جنيه", "", ignoreCase = true)
             .replace("Add", "", ignoreCase = true)
             .replace("Favorite", "", ignoreCase = true).trim()
             
@@ -450,12 +468,12 @@ class DealScannerService : AccessibilityService() {
         processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
         cooldownMillis: Long, prefs: SharedPreferences
     ): Boolean {
-        val discountRegex = Regex("""^-\s*(\d{1,2})%$""")
         val processedCards = mutableSetOf<String>()
         
         for (current in nodesList) {
             val badgeText = current.text.trim()
-            val discountMatch = discountRegex.matchEntire(badgeText) ?: continue
+            // تعبير مرن يقرأ الخصم في اللغتين مهما كان موضع علامة السالب أو النسبة
+            val discountMatch = Regex("""[-]?\s*(\d{1,2})\s*[%٪]-?""").find(badgeText) ?: continue
             val discountPercent = discountMatch.groupValues[1].toIntOrNull() ?: continue
             if (discountPercent < minDiscount) continue
             
@@ -484,7 +502,6 @@ class DealScannerService : AccessibilityService() {
                 plusClicked = clickNodeCenter(addButton)
             }
             
-            // النقر الاحتياطي يعتمد على لغة التطبيق لضمان الضغط في الموقع الصحيح (يمين أم يسار)
             if (!plusClicked) {
                 val rect = getRect(productCard)
                 val fallbackX = if (isRabbitInArabic()) rect.left + (rect.width() * 0.20f) else rect.left + (rect.width() * 0.80f)
