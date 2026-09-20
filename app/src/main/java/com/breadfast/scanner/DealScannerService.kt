@@ -109,76 +109,118 @@ class DealScannerService : AccessibilityService() {
 
 
 
-    private fun parseRabbitCartProducts(nodes: List<NodeData>): List<CartProduct> {
-    val products = mutableListOf<CartProduct>()
-    var startIndex = 0
-    while (startIndex < nodes.size) {
-        // تخطي أي أزرار كمية متبقية من المنتج السابق
-        while (startIndex < nodes.size && (nodes[startIndex].text.trim() in listOf("1", "-", "+", "2", "3"))) {
-            startIndex++
-        }
-        if (startIndex >= nodes.size) break
+    private fun parseRabbitCartProducts(nodes: List<NodeData>, deals: List<DealData>): List<CartProduct> {
+        val products = mutableListOf<CartProduct>()
+        var startIndex = 0
+        while (startIndex < nodes.size) {
+            // تخطي أزرار الكمية (- 1 +)
+            while (startIndex < nodes.size && (nodes[startIndex].text.trim() in listOf("1", "-", "+", "2", "3") || (nodes[startIndex].text.trim().matches(Regex("^\\d+$")) && nodes[startIndex].text.length < 3))) {
+                startIndex++
+            }
+            if (startIndex >= nodes.size) break
 
-        var currencyIndex = -1
-        for (i in startIndex until nodes.size) {
-            val t = nodes[i].text.replace(Regex("[\\u202A-\\u202C\\u200E\\u200F]"), "").trim()
-            if (t == "جنيه" || t.equals("egp", ignoreCase = true)) {
-                currencyIndex = i
+            var currencyIndex = -1
+            for (i in startIndex until nodes.size) {
+                val t = nodes[i].text.trim()
+                if (t.contains("جنيه") || t.equals("egp", ignoreCase = true)) {
+                    currencyIndex = i
+                    break
+                }
+            }
+
+            if (currencyIndex != -1) {
+                val chunk = nodes.subList(startIndex, currencyIndex)
+                if (chunk.isNotEmpty()) {
+                    val topY = getRect(chunk[0].node).top
+                    val bottomY = getRect(nodes[currencyIndex].node).bottom
+                    val texts = chunk.map { it.text.trim() }
+                    
+                    // استخراج الأرقام فقط (القروش والجنيهات)
+                    val numbers = texts.filter { it.matches(Regex("^\\d+$")) }
+
+                    if (numbers.size >= 2) {
+                        var oldPrice = 0.0
+                        var newPrice = 0.0
+
+                        // ترتيب قراءة العناصر في الواجهة العربية: قرش جديد -> جنيه جديد -> قرش قديم -> جنيه قديم
+                        if (numbers.size >= 4) {
+                            val oldPound = numbers[numbers.size - 1]
+                            val oldPiaster = numbers[numbers.size - 2]
+                            val newPound = numbers[numbers.size - 3]
+                            val newPiaster = numbers[numbers.size - 4]
+                            
+                            oldPrice = "$oldPound.$oldPiaster".toDoubleOrNull() ?: 0.0
+                            newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
+                        } else {
+                            // في حالة عدم وجود سعر قديم إطلاقاً
+                            val newPound = numbers[numbers.size - 1]
+                            val newPiaster = numbers[numbers.size - 2]
+                            newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
+                        }
+
+                        var discount = 0
+                        if (oldPrice > newPrice && oldPrice > 0) {
+                            discount = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
+                        }
+
+                        var name = texts[0].replace(Regex("^\\d+\\s*-\\s*"), "").trim()
+                        if (texts.size > 1 && texts[1].matches(Regex(".*(قطعة|جم|كجم|مل|لتر|ق|علكة|pcs|pc|g|gm|kg|ml|l).*"))) {
+                            name += " (" + texts[1].replace(Regex("^\\d+\\s*-\\s*"), "").trim() + ")"
+                        }
+
+                        // إذا كان السعر القديم مخفياً، استنتج الخصم من الداتا الملتقطة سابقاً من صفحة العروض
+                        if (discount == 0) {
+                            val bestMatch = deals.maxByOrNull { deal ->
+                                val words = deal.originalName.split(" ").filter { it.length > 2 }
+                                words.count { name.contains(it, ignoreCase = true) }
+                            }
+                            if (bestMatch != null) {
+                                val match = Regex("بخصم (\\d+)%").find(bestMatch.dealText)
+                                if (match != null) {
+                                    discount = match.groupValues[1].toIntOrNull() ?: 0
+                                }
+                            }
+                        }
+
+                        if (discount > 0 && newPrice > 0) {
+                            val formattedPrice = if (newPrice % 1.0 == 0.0) newPrice.toInt().toString() else newPrice.toString()
+                            products.add(CartProduct("$name ب $formattedPrice جنيه بخصم $discount%", topY, bottomY))
+                        }
+                    }
+                }
+                startIndex = currencyIndex + 1
+            } else {
                 break
             }
         }
+        return products
+    }
 
-        if (currencyIndex != -1) {
-            val chunk = nodes.subList(startIndex, currencyIndex)
-            if (chunk.isNotEmpty()) {
-                val topY = getRect(chunk[0].node).top
-                val texts = chunk.map { it.text.replace(Regex("[\\u202A-\\u202C\\u200E\\u200F]"), "").trim() }
-                
-                // استخراج آخر 4 أرقام قبل كلمة جنيه (والتي تمثل أسعار المنتج)
-                val numbers = texts.filter { it.matches(Regex("\\d+")) }
-                if (numbers.size >= 4) {
-                    val last4 = numbers.takeLast(4)
-                    val newPrice = "${last4[1]}.${last4[0]}".toDoubleOrNull() ?: 0.0
-                    val oldPrice = "${last4[3]}.${last4[2]}".toDoubleOrNull() ?: 0.0
+private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, previousSignature: String, sentProducts: Set<String>): Boolean {
+        val metrics = resources.displayMetrics
+        // تحديد نقطة قص الصورة (20%) + مساحة أمان صغيرة لتجنب القطع
+        val targetTopY = metrics.heightPixels * 0.22f 
 
-                    if (oldPrice > 0 && newPrice > 0 && oldPrice > newPrice) {
-                        val discount = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
-                        
-                        var name = texts[0]
-                        if (texts.size > 1 && texts[1].matches(Regex(".*(قطعة|جم|كجم|مل|لتر|ق|علكة|pcs|pc|g|gm|kg|ml|l).*"))) {
-                            name += " (" + texts[1] + ")"
-                        }
-                        
-                        val formattedPrice = if (newPrice % 1.0 == 0.0) newPrice.toInt().toString() else newPrice.toString()
-                        products.add(CartProduct("$name ب $formattedPrice جنيه بخصم $discount%", topY))
-                    }
-                }
-            }
-            startIndex = currencyIndex + 1
+        val nextProduct = parsedProducts.firstOrNull { 
+            !sentProducts.contains(it.textDescription.substringBefore(" ب ").trim()) 
+        }
+
+        val startY = nextProduct?.topY?.toFloat() ?: (metrics.heightPixels * 0.75f)
+
+        if (startY > targetTopY) {
+            val startFactor = (startY / metrics.heightPixels).coerceAtMost(0.85f)
+            val endFactor = 0.22f // السحب سيقف بالضبط أسفل خط قص الصورة
+            swipeUp(startFactor, endFactor, 1600L)
         } else {
-            break
+            swipeUp(0.75f, 0.22f, 1600L)
         }
-    }
-    return products
-}
 
-private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, visibleNodes: List<NodeData>, previousSignature: String): Boolean {
-    val metrics = resources.displayMetrics
-    val cropTopBoundary = metrics.heightPixels * 0.20f // النقطة التي يبدأ منها قص السكرين شوت
-
-    var nextItemTop: Float? = null
-    val lastCurrencyIndex = visibleNodes.indexOfLast { 
-        it.text.replace(Regex("[\\u202A-\\u202C\\u200E\\u200F]"), "").trim().let { t -> t == "جنيه" || t.equals("egp", ignoreCase = true) } 
-    }
-    
-    if (lastCurrencyIndex != -1 && lastCurrencyIndex + 1 < visibleNodes.size) {
-        var tempIndex = lastCurrencyIndex + 1
-        while (tempIndex < visibleNodes.size && visibleNodes[tempIndex].text.trim() in listOf("1", "-", "+", "2", "3")) {
-            tempIndex++
+        repeat(10) {
+            Thread.sleep(300)
+            val newSignature = cartScreenSignature(cartVisibleNodes())
+            if (newSignature.isNotBlank() && newSignature != previousSignature) return true
         }
-        if (tempIndex < visibleNodes.size) {
-            nextItemTop = getRect(visibleNodes[tempIndex].node).top.toFloat()
-        }
+        return false
     }
 
     // سحب العنصر غير المكتمل (أو الأخير) ليكون بالضبط عند حافة قص الصورة
@@ -970,70 +1012,136 @@ private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, visibleNode
     }
 
     @TargetApi(30)
-private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
-    addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
-    
-    val dealsListText = deals.joinToString(" | ") { it.originalName }
-    addLog("📋 المنتجات المحولة للسلة: $dealsListText")
+    private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
+        addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
+        
+        if (!isCartAlreadyOpen) {
+            val cartNode = findNodeByText(rootInActiveWindow, "Cart")
+                ?: findNodeByText(rootInActiveWindow, "السلة")
+                ?: findNodeByText(rootInActiveWindow, "الكيس")
 
-    if (!isCartAlreadyOpen) {
-        val cartNode = findNodeByText(rootInActiveWindow, "Cart")
-            ?: findNodeByText(rootInActiveWindow, "السلة")
-            ?: findNodeByText(rootInActiveWindow, "الكيس")
-
-        if (cartNode != null) {
-            clickNodeSafely(cartNode)
-            Thread.sleep(5000)
+            if (cartNode != null) {
+                clickNodeSafely(cartNode)
+                Thread.sleep(5000)
+            }
         }
-    }
 
-    if (deals.isEmpty()) return
+        if (deals.isEmpty()) return
 
-    if (appType == "RABBIT") {
-        var loopCount = 0
-        var lastSignature = ""
-        var unchangedScreens = 0
-        val sentProducts = mutableSetOf<String>()
+        if (appType == "RABBIT") {
+            var loopCount = 0
+            var lastSignature = ""
+            var unchangedScreens = 0
+            val sentProducts = mutableSetOf<String>()
+            val metrics = resources.displayMetrics
+            
+            val visibleTop = (metrics.heightPixels * 0.20).toInt()
+            val visibleBottom = (metrics.heightPixels * 0.82).toInt()
 
-        while (loopCount < 20) {
-            loopCount++
+            while (loopCount < 20) {
+                loopCount++
+                val visibleNodes = cartVisibleNodes()
+                val signature = cartScreenSignature(visibleNodes)
+
+                if (signature.isBlank()) break
+
+                if (signature == lastSignature) {
+                    unchangedScreens++
+                    if (unchangedScreens >= 2 || !smartScrollRabbitCart(emptyList(), signature, sentProducts)) {
+                        addLog("🏁 لم تتغير شاشة السلة بعد السحب، سيتم إنهاء التقرير.")
+                        break
+                    }
+                    continue
+                }
+                unchangedScreens = 0
+
+                val parsedProducts = parseRabbitCartProducts(visibleNodes, deals)
+                
+                // فلترة المنتجات لتشمل فقط المنتجات المكتملة الظهور (بين خط القص العلوي والسفلي)
+                val fullyVisibleProducts = parsedProducts.filter { product ->
+                    val uniqueKey = product.textDescription.substringBefore(" ب ").trim()
+                    !sentProducts.contains(uniqueKey) && product.topY >= (visibleTop - 20) && product.bottomY <= (visibleBottom + 20)
+                }
+
+                if (fullyVisibleProducts.isEmpty()) {
+                    addLog("⚠️ لم يتم العثور على منتجات مكتملة الظهور للالتقاط. جاري السحب للأسفل...")
+                    lastSignature = signature
+                    if (!smartScrollRabbitCart(parsedProducts, signature, sentProducts)) break
+                    continue
+                }
+
+                val currentBatchText = fullyVisibleProducts.map { it.textDescription }
+                fullyVisibleProducts.forEach { 
+                    sentProducts.add(it.textDescription.substringBefore(" ب ").trim()) 
+                }
+
+                val bitmap = takeScreenshotSync()
+                var imageBytes: ByteArray? = null
+
+                if (bitmap != null) {
+                    try {
+                        val topCrop = (bitmap.height * 0.20).toInt()
+                        val bottomCrop = (bitmap.height * 0.18).toInt()
+                        val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
+                        val stream = ByteArrayOutputStream()
+                        croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                        imageBytes = stream.toByteArray()
+                        croppedBitmap.recycle()
+                        bitmap.recycle()
+                    } catch (e: Exception) {
+                        addLog("❌ خطأ قص الصورة: ${e.message}")
+                    }
+                }
+
+                val prefix = "عروض ممتازة علي ابلكيشن رابيت\n\n"
+                val caption = (prefix + currentBatchText.joinToString("\n\n")).take(1020)
+
+                if (imageBytes != null) {
+                    addLog("📸 تم التقاط صورة السلة. جاري الإرسال...")
+                    sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+                } else {
+                    sendTelegramMessage(token, chatId, caption)
+                }
+
+                lastSignature = signature
+                if (!smartScrollRabbitCart(parsedProducts, signature, sentProducts)) break
+            }
+            return
+        }
+
+        // ==========================================
+        // مسار تطبيق بريدفاست القديم (بدون تعديل)
+        // ==========================================
+        deals.forEach { it.isAssigned = false }
+        var loopCountBF = 0
+        var lastSignatureBF = ""
+        var unchangedScreensBF = 0
+
+        while (deals.any { !it.isAssigned } && loopCountBF < 20) {
+            loopCountBF++
             val visibleNodes = cartVisibleNodes()
             val signature = cartScreenSignature(visibleNodes)
 
-            if (signature.isBlank()) {
-                addLog("⚠️ تعذر قراءة أي عناصر في السلة (الدورة $loopCount).")
-                break
-            }
-
-            if (signature == lastSignature) {
-                unchangedScreens++
-                if (unchangedScreens >= 2 || !smartScrollRabbitCart(parseRabbitCartProducts(visibleNodes), visibleNodes, signature)) {
-                    addLog("🏁 لم تتغير شاشة السلة بعد السحب، سيتم إنهاء التقرير.")
-                    break
-                }
+            if (signature.isBlank()) break
+            if (signature == lastSignatureBF) {
+                unchangedScreensBF++
+                if (unchangedScreensBF >= 2 || !moveCartAndWait(signature)) break
                 continue
             }
-            unchangedScreens = 0
+            unchangedScreensBF = 0
 
-            val parsedProducts = parseRabbitCartProducts(visibleNodes)
-            val currentBatchText = mutableListOf<String>()
+            val currentBatch = deals
+                .asSequence()
+                .filter { !it.isAssigned }
+                .mapNotNull { findDealPositionInCart(it, visibleNodes) }
+                .sortedBy { it.top }
+                .take(5)
+                .map { it.deal }
+                .toList()
 
-            for (product in parsedProducts) {
-                val uniqueKey = product.textDescription.substringBefore(" ب ").trim()
-                if (!sentProducts.contains(uniqueKey)) {
-                    currentBatchText.add(product.textDescription)
-                    sentProducts.add(uniqueKey)
-                    addLog("🛒 نجح استخراج المنتج من السلة: ${product.textDescription}")
-                }
-            }
-
-            if (currentBatchText.isEmpty()) {
-                addLog("⚠️ لم يتم العثور على منتجات جديدة هنا. جاري السحب للأسفل...")
-                lastSignature = signature
-                if (!smartScrollRabbitCart(parsedProducts, visibleNodes, signature)) {
-                    addLog("🏁 السلة انتهت، خروج.")
-                    break
-                }
+            if (currentBatch.isEmpty()) {
+                lastSignatureBF = signature
+                if (!moveCartAndWait(signature)) break
                 continue
             }
 
@@ -1050,100 +1158,27 @@ private fun openCartAndSendReport(token: String, chatId: String, deals: List<Dea
                     imageBytes = stream.toByteArray()
                     croppedBitmap.recycle()
                     bitmap.recycle()
-                } catch (e: Exception) {
-                    addLog("❌ خطأ قص الصورة: ${e.message}")
-                }
+                } catch (e: Exception) { }
             }
 
-            // صيغة الوصف الجديدة المطابقة لطلبك
-            val prefix = if (loopCount == 1) "عروض ممتازة علي ابلكيشن رابيت\n\n" else "عروض ممتازة علي ابلكيشن رابيت\n\n"
-            val caption = (prefix + currentBatchText.joinToString("\n\n")).take(1020)
+            val prefix = if (loopCountBF == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
+            val caption = (prefix + currentBatch.joinToString("\n\n") { it.dealText }).take(1020)
 
             if (imageBytes != null) {
-                addLog("📸 تم التقاط صورة السلة. جاري الإرسال...")
+                addLog("📸 تم التقاط صورة بريدفاست. جاري الإرسال...")
                 sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
             } else {
-                addLog("⚠️ فشل التقاط الصورة، جاري إرسال تقرير نصي...")
                 sendTelegramMessage(token, chatId, caption)
             }
 
-            lastSignature = signature
-            if (!smartScrollRabbitCart(parsedProducts, visibleNodes, signature)) break
-        }
-        return
-    }
-
-    // ==========================================
-    // مسار تطبيق بريدفاست (بدون أي تعديل)
-    // ==========================================
-    deals.forEach { it.isAssigned = false }
-    var loopCountBF = 0
-    var lastSignatureBF = ""
-    var unchangedScreensBF = 0
-
-    while (deals.any { !it.isAssigned } && loopCountBF < 20) {
-        loopCountBF++
-        val visibleNodes = cartVisibleNodes()
-        val signature = cartScreenSignature(visibleNodes)
-
-        if (signature.isBlank()) break
-        if (signature == lastSignatureBF) {
-            unchangedScreensBF++
-            if (unchangedScreensBF >= 2 || !moveCartAndWait(signature)) break
-            continue
-        }
-        unchangedScreensBF = 0
-
-        val currentBatch = deals
-            .asSequence()
-            .filter { !it.isAssigned }
-            .mapNotNull { findDealPositionInCart(it, visibleNodes) }
-            .sortedBy { it.top }
-            .take(5)
-            .map { it.deal }
-            .toList()
-
-        if (currentBatch.isEmpty()) {
+            currentBatch.forEach { it.isAssigned = true }
             lastSignatureBF = signature
-            if (!moveCartAndWait(signature)) break
-            continue
-        }
 
-        val bitmap = takeScreenshotSync()
-        var imageBytes: ByteArray? = null
-
-        if (bitmap != null) {
-            try {
-                val topCrop = (bitmap.height * 0.20).toInt()
-                val bottomCrop = (bitmap.height * 0.18).toInt()
-                val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
-                val stream = ByteArrayOutputStream()
-                croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                imageBytes = stream.toByteArray()
-                croppedBitmap.recycle()
-                bitmap.recycle()
-            } catch (e: Exception) { }
-        }
-
-        val prefix = if (loopCountBF == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
-        val caption = (prefix + currentBatch.joinToString("\n\n") { it.dealText }).take(1020)
-
-        if (imageBytes != null) {
-            addLog("📸 تم التقاط صورة بريدفاست. جاري الإرسال...")
-            sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
-        } else {
-            sendTelegramMessage(token, chatId, caption)
-        }
-
-        currentBatch.forEach { it.isAssigned = true }
-        lastSignatureBF = signature
-
-        if (deals.any { !it.isAssigned }) {
-            if (!moveCartAndWait(signature)) break
+            if (deals.any { !it.isAssigned }) {
+                if (!moveCartAndWait(signature)) break
+            }
         }
     }
-}
-
 
     private fun sendChunksAsText(token: String, chatId: String, chunks: List<List<String>>, appType: String = "BREADFAST") {
         for (i in chunks.indices) {
