@@ -26,6 +26,7 @@ import kotlin.concurrent.thread
 data class DealData(val originalName: String, val dealText: String, var isAssigned: Boolean = false)
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
 private data class RabbitProductInfo(val name: String, val unit: String?, val salePrice: String?)
+private data class PositionedDeal(val deal: DealData, val top: Int, val score: Int)
 
 class DealScannerService : AccessibilityService() {
 
@@ -33,8 +34,6 @@ class DealScannerService : AccessibilityService() {
     private var lastScanTime = 0L
     private var addedItemsCount = 0
     private val rabbitAddAttempts = mutableMapOf<String, Int>()
-    // تشخيص مؤقت للسلة فقط؛ لا يغيّر منطق المسح أو الضغط على +.
-    private var cartDebugDumpSaved = false
 
     private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
 
@@ -776,193 +775,237 @@ class DealScannerService : AccessibilityService() {
         } catch (e: Exception) { return false }
     }
 
-    @TargetApi(30)
-    private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
-        // لا يؤثر إلا على سجل التشخيص في أول Screenshot من هذا التقرير.
-        cartDebugDumpSaved = false
-        addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
-        
-        if (!isCartAlreadyOpen) {
-            val cartNode = findNodeByText(rootInActiveWindow, "Cart") ?: findNodeByText(rootInActiveWindow, "السلة") ?: findNodeByText(rootInActiveWindow, "الكيس")
-            if (cartNode != null) {
-                clickNodeSafely(cartNode)
-                Thread.sleep(5000) 
+    // ===========================
+    // Cart report helpers only
+    // هذه الدوال لا تتعامل مع صفحة العروض أو زر + أو زر -.
+    // ===========================
+    private fun normalizeForCartMatch(text: String): String {
+        return text
+            .lowercase(java.util.Locale.ROOT)
+            .replace("\n", " ")
+            .replace("أ", "ا")
+            .replace("إ", "ا")
+            .replace("آ", "ا")
+            .replace("ى", "ي")
+            .replace("ة", "ه")
+            .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun findDealPositionInCart(deal: DealData, visibleNodes: List<NodeData>): PositionedDeal? {
+        val words = normalizeForCartMatch(deal.originalName)
+            .split(Regex("\\s+"))
+            .filter {
+                it.length >= 3 &&
+                !it.matches(Regex("\\d+")) &&
+                it !in setOf("جم", "قطعه", "قطعة", "pcs", "pc", "g", "gm", "kg", "ml", "egp", "جنيه")
+            }
+            .distinct()
+            .take(6)
+
+        if (words.isEmpty()) return null
+
+        var bestNode: AccessibilityNodeInfo? = null
+        var bestScore = 0
+        var bestArea = Int.MAX_VALUE
+
+        for (nodeData in visibleNodes) {
+            val nodeText = normalizeForCartMatch(nodeData.text)
+            if (nodeText.isBlank()) continue
+
+            val score = words.count { nodeText.contains(it) }
+            val rect = getRect(nodeData.node)
+            val area = rect.width() * rect.height()
+
+            if (score > bestScore || (score == bestScore && score > 0 && area < bestArea)) {
+                bestScore = score
+                bestArea = area
+                bestNode = nodeData.node
             }
         }
-        
+
+        val requiredScore = when {
+            words.size >= 3 -> 2
+            words.size == 2 -> 2
+            else -> 1
+        }
+
+        if (bestNode == null || bestScore < requiredScore) return null
+
+        return PositionedDeal(deal, getRect(bestNode).top, bestScore)
+    }
+
+    private fun cartVisibleNodes(): MutableList<NodeData> {
+        val nodes = mutableListOf<NodeData>()
+        val metrics = resources.displayMetrics
+        extractNodes(
+            rootInActiveWindow,
+            nodes,
+            metrics.heightPixels * 0.20f,
+            metrics.heightPixels * 0.82f
+        )
+        return nodes
+    }
+
+    private fun cartScreenSignature(nodes: List<NodeData>): String {
+        return nodes
+            .map {
+                val rect = getRect(it.node)
+                "${normalizeForCartMatch(it.text)}@${rect.top}"
+            }
+            .filter { !it.startsWith("@") }
+            .distinct()
+            .joinToString("|")
+    }
+
+    private fun moveCartAndWait(previousSignature: String): Boolean {
+        // يبدأ السحب في قائمة المنتجات وليس فوق بانر التوصيل السفلي.
+        swipeUp(0.72f, 0.30f, 1100L)
+
+        repeat(10) {
+            Thread.sleep(250)
+            val newSignature = cartScreenSignature(cartVisibleNodes())
+            if (newSignature.isNotBlank() && newSignature != previousSignature) {
+                return true
+            }
+        }
+
+        return false
+    }
+
+    @TargetApi(30)
+    private fun openCartAndSendReport(token: String, chatId: String, deals: List<DealData>, isCartAlreadyOpen: Boolean = false, appType: String = "BREADFAST") {
+        addLog("🚀 تجهيز تقرير لـ ${deals.size} منتجات...")
+
+        if (!isCartAlreadyOpen) {
+            val cartNode = findNodeByText(rootInActiveWindow, "Cart")
+                ?: findNodeByText(rootInActiveWindow, "السلة")
+                ?: findNodeByText(rootInActiveWindow, "الكيس")
+
+            if (cartNode != null) {
+                clickNodeSafely(cartNode)
+                Thread.sleep(5000)
+            }
+        }
+
         if (deals.isEmpty()) return
 
-        // التأكد من تصفير حالة الإرسال لجميع المنتجات
+        // هذا التعديل يخص التقرير فقط؛ لا يغيّر أي منطق لإضافة العروض.
         deals.forEach { it.isAssigned = false }
 
-        val safeTopCart = resources.displayMetrics.heightPixels * 0.20f
-        val safeBottomCart = resources.displayMetrics.heightPixels * 0.82f 
         var loopCount = 0
+        var lastSignature = ""
+        var unchangedScreens = 0
 
-        // الاستمرار في حلقة طالما توجد منتجات لم ترسل (مع حد أقصى 10 دورات لمنع التكرار اللانهائي)
-        while (deals.any { !it.isAssigned } && loopCount < 10) {
+        while (deals.any { !it.isAssigned } && loopCount < 20) {
             loopCount++
+
+            val visibleNodes = cartVisibleNodes()
+            val signature = cartScreenSignature(visibleNodes)
+
+            if (signature.isBlank()) {
+                addLog("⚠️ تعذر قراءة عناصر السلة في الدورة $loopCount.")
+                break
+            }
+
+            // لا ترسل Screenshot ثانية عندما لم تتحرك السلة فعلياً.
+            if (signature == lastSignature) {
+                unchangedScreens++
+                addLog("⚠️ السلة لم تتغير؛ لن يتم إرسال Screenshot مكررة.")
+
+                if (unchangedScreens >= 2 || !moveCartAndWait(signature)) {
+                    addLog("🏁 لا توجد صفحة جديدة في السلة لإرسالها.")
+                    break
+                }
+                continue
+            }
+
+            unchangedScreens = 0
+
+            // نطابق المنتجات الظاهرة ثم نرتبها رأسياً كما تظهر في Screenshot.
+            val currentBatch = deals
+                .asSequence()
+                .filter { !it.isAssigned }
+                .mapNotNull { findDealPositionInCart(it, visibleNodes) }
+                .sortedBy { it.top }
+                .take(5)
+                .map { it.deal }
+                .toList()
+
+            // لا تستخدم fallback عشوائياً؛ لا نريد وصفاً لا يخص الصورة.
+            if (currentBatch.isEmpty()) {
+                addLog("⚠️ لا توجد مطابقة موثوقة لمنتجات الصورة الحالية؛ لن يتم إرسال وصف خاطئ.")
+                lastSignature = signature
+
+                if (!moveCartAndWait(signature)) {
+                    break
+                }
+                continue
+            }
+
             val bitmap = takeScreenshotSync()
             var imageBytes: ByteArray? = null
-            
+
             if (bitmap != null) {
                 try {
                     val topCrop = (bitmap.height * 0.20).toInt()
                     val bottomCrop = (bitmap.height * 0.18).toInt()
-                    val croppedBitmap = Bitmap.createBitmap(bitmap, 0, topCrop, bitmap.width, bitmap.height - topCrop - bottomCrop)
+                    val croppedBitmap = Bitmap.createBitmap(
+                        bitmap,
+                        0,
+                        topCrop,
+                        bitmap.width,
+                        bitmap.height - topCrop - bottomCrop
+                    )
                     val stream = ByteArrayOutputStream()
                     croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
                     imageBytes = stream.toByteArray()
-                    
-                    bitmap.recycle()
                     croppedBitmap.recycle()
-                } catch (e: Exception) { 
-                    addLog("❌ خطأ في معالجة الصورة: ${e.message}") 
+                    bitmap.recycle()
+                } catch (e: Exception) {
+                    addLog("❌ خطأ في معالجة Screenshot: ${e.message}")
                 }
             }
 
-            // 1. قراءة النصوص الظاهرة في السلة حالياً
-            val visibleNodes = mutableListOf<NodeData>()
-            extractNodes(rootInActiveWindow, visibleNodes, safeTopCart, safeBottomCart)
-
-            // تسجيل شجرة Accessibility للسلة مرة واحدة فقط، للتشخيص.
-            if (!cartDebugDumpSaved) {
-                dumpCartAccessibilityTree()
-                cartDebugDumpSaved = true
-            }
-
-            val screenText = visibleNodes.joinToString(" ") { it.text.replace("\n", " ") }.lowercase(java.util.Locale.ROOT)
-            
-            val currentBatch = mutableListOf<DealData>()
-
-            // 2. مطابقة المنتجات المحفوظة مع ما هو ظاهر في الشاشة
-            for (deal in deals) {
-                if (!deal.isAssigned) {
-                    val cleanName = deal.originalName.replace("\n", " ").trim().lowercase(java.util.Locale.ROOT)
-                    // استخراج الكلمات المميزة للمنتج (3 حروف فأكثر، وبدون أرقام)
-                    val words = cleanName.split(Regex("\\s+"))
-                        .filter { it.length >= 3 && !it.matches(Regex("\\d+")) }
-                        .distinct()
-                        .take(4)
-
-                    val matchCount = words.count { word -> screenText.contains(word) }
-                    
-                    val minRequiredMatches = when {
-                        words.size >= 3 -> 2
-                        words.size == 2 -> 1
-                        else -> 1
-                    }
-                    
-                    // إذا تطابق المنتج مع الشاشة، أضفه للدفعة الحالية
-                    if (matchCount >= minRequiredMatches) {
-                        currentBatch.add(deal)
-                        deal.isAssigned = true
-                    }
-                }
-            }
-            
-            // 3. ضبط الحد الأقصى بـ 5 منتجات لكل صورة (وإرجاع الباقي كغير مرسل)
-            if (currentBatch.size > 5) {
-                val extras = currentBatch.drop(5)
-                currentBatch.retainAll(currentBatch.take(5).toSet())
-                extras.forEach { it.isAssigned = false }
-            }
-
-            // 4. خطة بديلة: إذا فشلت المطابقة ولم يتبق سوى منتجات لم ترسل، نأخذها إجبارياً لمنع توقف البوت
-            if (currentBatch.isEmpty() && deals.any { !it.isAssigned }) {
-                val unassigned = deals.filter { !it.isAssigned }.take(5)
-                unassigned.forEach { 
-                    currentBatch.add(it)
-                    it.isAssigned = true
-                }
-                addLog("⚠️ تطابق نصي ضعيف، تم إرفاق ${currentBatch.size} منتجات احتياطياً.")
-            }
-
-            if (currentBatch.isNotEmpty()) {
-                val prefix = if (appType == "RABBIT") {
-                    if (loopCount == 1) "عروض ممتازة على Rabbit 🐰\n\n" else "وعروض Rabbit إضافية 🐰\n\n"
+            val prefix = if (appType == "RABBIT") {
+                if (loopCount == 1) {
+                    "عروض ممتازة على Rabbit 🐰\n\n"
                 } else {
-                    if (loopCount == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
+                    "وعروض Rabbit إضافية 🐰\n\n"
                 }
-                val captionText = currentBatch.joinToString("\n\n") { it.dealText }
-                val finalCaption = (prefix + captionText).take(1020)
-
-                if (imageBytes != null) {
-                    addLog("📸 إرسال صورة بها ${currentBatch.size} منتجات...")
-                    sendTelegramPhotoMultipart(token, chatId, imageBytes, finalCaption)
-                } else {
-                    addLog("⚠️ صورة غير متاحة، جاري الإرسال كنص...")
-                    sendTelegramMessage(token, chatId, finalCaption)
-                }
+            } else {
+                if (loopCount == 1) "عروض ممتازة\n\n" else "ودول كمان\n\n"
             }
 
-            // 5. التمرير البطيء لاستعراض باقي السلة إذا تبقى منتجات
+            val caption = (
+                prefix + currentBatch.joinToString("\n\n") { it.dealText }
+            ).take(1020)
+
+            if (imageBytes != null) {
+                addLog("📸 إرسال صورة بها ${currentBatch.size} منتجات مرتبة حسب السلة...")
+                sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+            } else {
+                addLog("⚠️ Screenshot غير متاحة؛ جاري إرسال النص المطابق للمنتجات المرئية.")
+                sendTelegramMessage(token, chatId, caption)
+            }
+
+            // لا نعلّم المنتج كمرسل إلا بعد وضعه في التقرير الحالي.
+            currentBatch.forEach { it.isAssigned = true }
+            lastSignature = signature
+
             if (deals.any { !it.isAssigned }) {
-                swipeUp(0.82f, 0.22f, 2000L) 
-                Thread.sleep(2500)
-            }
-        }
-    }
-    
-    // ==========================================
-    // Cart diagnostics only
-    // لا تستدعي أي Gesture ولا تعدّل المنتجات أو أزرار + و -.
-    // ==========================================
-    private fun dumpCartAccessibilityTree() {
-        val root = rootInActiveWindow ?: run {
-            addLog("❌ DEBUG CART: لا توجد نافذة نشطة.")
-            return
-        }
-
-        val metrics = resources.displayMetrics
-        val safeTop = metrics.heightPixels * 0.18f
-        val safeBottom = metrics.heightPixels * 0.84f
-        val lines = mutableListOf<String>()
-
-        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
-            if (node == null) return
-
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-
-            val text = (node.text?.toString()
-                ?: node.contentDescription?.toString()
-                ?: "")
-                .replace("\n", " ")
-                .trim()
-
-            val insideCartArea =
-                !rect.isEmpty &&
-                rect.top >= safeTop &&
-                rect.bottom <= safeBottom
-
-            if (insideCartArea && text.isNotBlank()) {
-                lines.add(
-                    "D=$depth | Y=${rect.top}-${rect.bottom} | " +
-                    "X=${rect.left}-${rect.right} | " +
-                    "click=${node.isClickable} | text=$text"
-                )
-            }
-
-            for (i in 0 until node.childCount) {
-                walk(node.getChild(i), depth + 1)
+                if (!moveCartAndWait(signature)) {
+                    addLog("🏁 تعذر الانتقال لعناصر جديدة في السلة.")
+                    break
+                }
             }
         }
 
-        walk(root, 0)
-
-        val dump = lines
-            .distinct()
-            .take(45)
-            .joinToString("\n")
-
-        getSharedPreferences("ScannerPrefs", Context.MODE_PRIVATE)
-            .edit()
-            .putString("CART_DEBUG_DUMP", dump)
-            .apply()
-
-        // يظهر في شاشة Logs الحالية دون تعديل MainActivity.
-        addLog("🧪 CART DEBUG DUMP (${lines.size} nodes):\n$dump")
+        val unsent = deals.count { !it.isAssigned }
+        if (unsent > 0) {
+            addLog("⚠️ انتهى التقرير وبقي $unsent منتجات لم تطابق السلة بثقة.")
+        }
     }
 
     private fun sendChunksAsText(token: String, chatId: String, chunks: List<List<String>>, appType: String = "BREADFAST") {
