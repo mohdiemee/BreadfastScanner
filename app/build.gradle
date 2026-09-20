@@ -24,3 +24,7 @@ android {
         jvmTarget = '17'
     }
 }
+
+dependencies {
+    implementation 'cz.adaptech.tesseract4android:tesseract4android:4.8.0'
+}
