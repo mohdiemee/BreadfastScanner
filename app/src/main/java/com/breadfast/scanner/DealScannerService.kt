@@ -112,58 +112,6 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    private fun normalizeProductKey(
-    text: String
-): String {
-    return text
-        .lowercase(java.util.Locale.ROOT)
-        .replace("\u200E", "")
-        .replace("\u200F", "")
-        .replace("\u202A", "")
-        .replace("\u202B", "")
-        .replace("\u202C", "")
-        .replace("\u2066", "")
-        .replace("\u2067", "")
-        .replace("\u2069", "")
-        .replace("أ", "ا")
-        .replace("إ", "ا")
-        .replace("آ", "ا")
-        .replace("ى", "ي")
-        .replace("ة", "ه")
-        .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
-        .replace(Regex("\\s+"), " ")
-        .trim()
-}
-
-
-    
-    
-private fun uniqueProductKey(
-    text: String
-): String {
-    return normalizeProductKey(
-        text
-            .substringBefore(" بخصم")
-            .substringBefore(" ب ")
-            .trim()
-    )
-}
-
-private fun formatPrice(
-    value: Double
-): String {
-    return if (value % 1.0 == 0.0) {
-        value.toInt().toString()
-    } else {
-        String.format(
-            java.util.Locale.US,
-            "%.2f",
-            value
-        )
-            .trimEnd('0')
-            .trimEnd('.')
-    }
-}
 
     private fun ensureOcrReady(): Boolean {
     if (arabicOcr != null) {
@@ -273,7 +221,6 @@ private fun formatPrice(
 }
 
 
-    
 
     private fun normalizeOcrText(
     text: String
@@ -353,7 +300,7 @@ private fun cleanOcrLine(
 
 private fun parseOcrCartProducts(
     ocrText: String,
-    deals: List<DealData> = emptyList()
+    deals: List<DealData>
 ): List<OcrCartProduct> {
     val lines = ocrText
         .lines()
@@ -361,249 +308,440 @@ private fun parseOcrCartProducts(
         .filter { it.isNotBlank() }
 
     if (lines.isEmpty()) {
-        addLog("⚠️ OCR parser: لا توجد أسطر.")
+        addLog("⚠️ OCR لم يُرجع أسطرًا.")
         return emptyList()
     }
 
     val products = mutableListOf<OcrCartProduct>()
 
-    val ignoredPhrases = listOf(
-        "اختيار جامد",
-        "وفرت",
-        "جنيه",
-        "يللا ندفع",
-        "توصيل ببلاش",
-        "واو ليك"
-    )
+    val normalizedDeals = deals.map {
+        it to normalizeProductKey(it.originalName)
+    }
 
-    fun isIgnoredLine(line: String): Boolean {
-        val normalized = normalizeOcrText(line)
-            .replace(" ", "")
+    for (dealPair in normalizedDeals) {
+        val deal = dealPair.first
+        val dealName = dealPair.second
 
-        return normalized.isBlank() ||
-            ignoredPhrases.any {
-                normalized.contains(
-                    it.replace(" ", ""),
-                    ignoreCase = true
-                )
+        val matchingLines = lines.filter { line ->
+            val normalizedLine =
+                normalizeProductKey(line)
+
+            val words = dealName
+                .split(Regex("\\s+"))
+                .filter { it.length >= 3 }
+
+            val matchedWords = words.count {
+                normalizedLine.contains(it)
             }
-    }
 
-    fun isNumericOnlyLine(line: String): Boolean {
-        return normalizeOcrText(line).matches(
-            Regex("""^[\d\s.,:;()+\-]+$""")
-        )
-    }
-
-    fun isUnitLine(line: String): Boolean {
-        return normalizeOcrText(line).matches(
-            Regex(
-                "(?i).*\\b(" +
-                    "قطعة|قطعه|جم|كجم|مل|لتر|" +
-                    "علكة|pcs?|pc|g|gm|kg|ml|l|ق" +
-                    ")\\b.*"
+            matchedWords >= maxOf(
+                1,
+                minOf(2, words.size)
             )
-        )
-    }
-
-    fun looksLikeProductLine(line: String): Boolean {
-        val normalized = normalizeOcrText(line)
-
-        if (normalized.length < 3) {
-            return false
         }
 
-        if (isIgnoredLine(normalized)) {
-            return false
-        }
-
-        if (isNumericOnlyLine(normalized)) {
-            return false
-        }
-
-        if (isUnitLine(normalized)) {
-            return false
-        }
-
-        if (
-            normalized.contains("جنيه") ||
-                normalized.contains("EGP", ignoreCase = true)
-        ) {
-            return false
-        }
-
-        return normalized.any { it.isLetter() }
-    }
-
-    fun isPriceLine(line: String): Boolean {
-        val normalized = normalizeOcrText(line)
-
-        if (
-            normalized.contains("جنيه") ||
-                normalized.contains("EGP", ignoreCase = true)
-        ) {
-            return true
-        }
-
-        val values = extractOcrNumbers(normalized)
-
-        return values.any {
-            it >= 2.0
-        }
-    }
-
-    fun choosePrices(
-        values: List<Double>
-    ): Pair<Double?, Double?> {
-        val candidates = values
-            .filter {
-                it >= 2.0 &&
-                    it <= 10000.0
-            }
-            .distinct()
-
-        if (candidates.isEmpty()) {
-            return null to null
-        }
-
-        val newPrice =
-            candidates.minOrNull()
-
-        val oldPrice =
-            candidates
-                .filter {
-                    newPrice != null &&
-                        it > newPrice
-                }
-                .maxOrNull()
-
-        return oldPrice to newPrice
-    }
-
-    var index = 0
-
-    while (index < lines.size) {
-        val firstLine = lines[index]
-
-        if (!looksLikeProductLine(firstLine)) {
-            index++
-            continue
-        }
-
-        val productBlock =
-            mutableListOf<String>()
-
-        productBlock.add(firstLine)
-
-        var cursor = index + 1
-        var priceFound = false
-
-        while (
-            cursor < lines.size &&
-                cursor <= index + 8
-        ) {
-            val line = lines[cursor]
-
-            if (
-                looksLikeProductLine(line) &&
-                    productBlock.size > 1
-            ) {
-                break
-            }
-
-            productBlock.add(line)
-
-            if (isPriceLine(line)) {
-                priceFound = true
-                cursor++
-                break
-            }
-
-            cursor++
-        }
-
-        if (!priceFound) {
+        if (matchingLines.isEmpty()) {
             addLog(
-                "⚠️ OCR: لم يتم العثور على سعر بعد: " +
-                    firstLine
+                "⚠️ OCR لم يطابق: " +
+                    deal.originalName
             )
-
-            index++
             continue
         }
 
-        val nameParts = productBlock
-            .filter {
-                looksLikeProductLine(it)
-            }
+        val matchedIndex = lines.indexOf(
+            matchingLines.first()
+        )
 
-        val productName =
-            nameParts
-                .joinToString(" ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
+        val startIndex =
+            maxOf(0, matchedIndex - 1)
 
-        if (productName.length < 3) {
-            index = cursor
-            continue
-        }
+        val endIndex =
+            minOf(lines.size, matchedIndex + 6)
 
-        val values = productBlock
-            .flatMap {
-                extractOcrNumbers(it)
-            }
+        val productBlock = lines
+            .subList(startIndex, endIndex)
+            .joinToString(" ")
 
-        val prices = choosePrices(values)
+        val numbers = extractOcrNumbers(productBlock)
 
-        val oldPrice = prices.first
-        val newPrice = prices.second
-
-        if (newPrice == null) {
+        if (numbers.isEmpty()) {
             addLog(
-                "⚠️ OCR: السعر غير صالح للمنتج: " +
-                    productName
+                "⚠️ OCR لم يجد أسعارًا: " +
+                    deal.originalName
             )
-
-            index = cursor
             continue
         }
 
-        val discount =
+        val newPrice = numbers.minOrNull()
+        val oldPrice = numbers
+            .filter { it > (newPrice ?: 0.0) }
+            .maxOrNull()
+
+        if (newPrice == null) continue
+
+        val discountFromDeal =
+            Regex("بخصم\\s*(\\d+)%")
+                .find(deal.dealText)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+
+        val calculatedDiscount =
             calculateDiscount(
                 oldPrice,
                 newPrice
             )
 
-        val product = OcrCartProduct(
-            name = productName,
-            price = formatPrice(newPrice),
-            oldPrice = oldPrice?.let {
-                formatPrice(it)
-            },
-            discount = discount
-        )
+        val discount =
+            discountFromDeal ?: calculatedDiscount
 
-        products.add(product)
+        val description =
+            "${deal.originalName} ب " +
+                "${formatPrice(newPrice)} جنيه" +
+                (discount?.let {
+                    " بخصم $it%"
+                } ?: "")
+
+        products.add(
+            OcrCartProduct(
+                name = deal.originalName,
+                price = formatPrice(newPrice),
+                oldPrice = oldPrice?.let {
+                    formatPrice(it)
+                },
+                discount = discount
+            )
+        )
 
         addLog(
-            "✅ OCR product: " +
-                product.toDealText()
+            "✅ OCR product: $description"
         )
-
-        index = cursor
     }
 
-    val finalProducts = products
-        .distinctBy {
-            normalizeProductKey(it.name)
+    return products.distinctBy {
+        normalizeProductKey(it.name)
+    }
+}
+    
+    private fun normalizeProductKey(text: String): String {
+        return text
+            .lowercase(java.util.Locale.ROOT)
+            .replace("\u200E", "")
+            .replace("\u200F", "")
+            .replace("\u202A", "")
+            .replace("\u202B", "")
+            .replace("\u202C", "")
+            .replace("أ", "ا")
+            .replace("إ", "ا")
+            .replace("آ", "ا")
+            .replace("ى", "ي")
+            .replace("ة", "ه")
+            .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun uniqueProductKey(text: String): String {
+        return normalizeProductKey(
+            text.substringBefore(" بخصم")
+                .substringBefore(" ب ")
+                .trim()
+        )
+    }
+
+    private fun formatPrice(value: Double): String {
+        return if (value % 1.0 == 0.0) {
+            value.toInt().toString()
+        } else {
+            String.format(java.util.Locale.US, "%.2f", value)
+                .trimEnd('0')
+                .trimEnd('.')
+        }
+    }
+
+    private fun isNumericToken(text: String): Boolean {
+        return text.trim().replace(",", ".").matches(
+            Regex("^\\d+(?:[.,]\\d{1,2})?$")
+        )
+    }
+
+    private fun numericValue(text: String): Double? {
+        return text.trim()
+            .replace(",", ".")
+            .toDoubleOrNull()
+    }
+
+    private fun isUnitText(text: String): Boolean {
+        return text.matches(
+            Regex(
+                "(?i).*\\b(" +
+                    "قطعة|قطعه|جم|كجم|مل|لتر|ق|علكة|pcs?|pc|g|gm|kg|ml|l" +
+                    ")\\b.*"
+            )
+        )
+    }
+
+    private fun parseRabbitCartProducts(
+    nodes: List<NodeData>,
+    deals: List<DealData>
+): List<CartProduct> {
+    if (nodes.isEmpty()) {
+        addLog("⚠️ Cart parser: لا توجد Accessibility nodes.")
+        return emptyList()
+    }
+
+    val result = mutableListOf<CartProduct>()
+
+    val orderedNodes = nodes
+        .mapNotNull { item ->
+            val text = normalizeRabbitText(item.text)
+            val rect = getRect(item.node)
+
+            if (text.isBlank() || rect.isEmpty) {
+                null
+            } else {
+                NodeData(text, item.node)
+            }
+        }
+        .sortedBy { getRect(it.node).top }
+
+    val normalizedDeals = deals.map { deal ->
+        deal to normalizeProductKey(deal.originalName)
+    }
+
+    val usedDeals = mutableSetOf<String>()
+
+    for (index in orderedNodes.indices) {
+        val current = orderedNodes[index]
+        val currentText = normalizeProductKey(current.text)
+
+        if (currentText.length < 3) continue
+        if (isNumericToken(current.text)) continue
+        if (isUnitText(current.text)) continue
+        if (current.text == "+" || current.text == "-") continue
+
+        val matchedDeal = normalizedDeals
+            .filter { (_, normalizedName) ->
+                !usedDeals.contains(normalizedName)
+            }
+            .map { pair ->
+                val deal = pair.first
+                val normalizedName = pair.second
+                val words = normalizedName
+                    .split(Regex("\\s+"))
+                    .filter { it.length >= 3 }
+
+                val score = words.count { word ->
+                    currentText.contains(word)
+                }
+
+                Triple(deal, normalizedName, score)
+            }
+            .maxByOrNull { it.third }
+
+        if (matchedDeal == null || matchedDeal.third == 0) {
+            continue
         }
 
+        val deal = matchedDeal.first
+        val dealKey = matchedDeal.second
+
+        val productRect = getRect(current.node)
+        val productTop = productRect.top
+
+        val nextProductTop = normalizedDeals
+            .filter { (_, name) ->
+                name != dealKey &&
+                    !usedDeals.contains(name)
+            }
+            .mapNotNull { (_, name) ->
+                orderedNodes
+                    .filter { node ->
+                        val nodeText = normalizeProductKey(node.text)
+                        nodeText.contains(
+                            name.split(Regex("\\s+"))
+                                .firstOrNull { it.length >= 3 }
+                                ?: ""
+                        )
+                    }
+                    .map { getRect(it.node).top }
+                    .filter { it > productTop }
+                    .minOrNull()
+            }
+            .minOrNull()
+
+        val productBottom = nextProductTop
+            ?.minus(5)
+            ?: (
+                orderedNodes
+                    .map { getRect(it.node).bottom }
+                    .filter { it > productTop }
+                    .minOrNull()
+                    ?: productRect.bottom
+                )
+
+        val numericValues = mutableListOf<Double>()
+
+        for (j in index until orderedNodes.size) {
+            val node = orderedNodes[j]
+            val rect = getRect(node.node)
+
+            if (rect.top > productBottom + 20) break
+
+            if (isNumericToken(node.text)) {
+                numericValue(node.text)?.let {
+                    if (it > 0.0 && it < 100000.0) {
+                        numericValues.add(it)
+                    }
+                }
+            }
+        }
+
+        if (numericValues.isEmpty()) {
+            addLog(
+                "⚠️ لم يتم العثور على سعر للمنتج: " +
+                    deal.originalName
+            )
+            continue
+        }
+
+        val newPrice = numericValues.minOrNull() ?: continue
+
+        val discountFromDeal = Regex(
+            "بخصم\\s*(\\d+)%"
+        )
+            .find(deal.dealText)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+            ?: 0
+
+        val oldPrice = numericValues
+            .filter { it > newPrice }
+            .maxOrNull()
+
+        val calculatedDiscount =
+            if (
+                oldPrice != null &&
+                    oldPrice > newPrice
+            ) {
+                (((oldPrice - newPrice) / oldPrice) * 100)
+                    .toInt()
+            } else {
+                0
+            }
+
+        val discount = maxOf(
+            discountFromDeal,
+            calculatedDiscount
+        )
+
+        if (discount <= 0) {
+            addLog(
+                "⚠️ تعذر تحديد الخصم: " +
+                    deal.originalName
+            )
+            continue
+        }
+
+        val description =
+            "${deal.originalName} ب " +
+                "${formatPrice(newPrice)} جنيه " +
+                "بخصم $discount%"
+
+        result.add(
+            CartProduct(
+                textDescription = description,
+                topY = productTop,
+                bottomY = productBottom
+            )
+        )
+
+        usedDeals.add(dealKey)
+
+        addLog(
+            "🧾 Cart product: $description | " +
+                "top=$productTop | bottom=$productBottom"
+        )
+    }
+
+    val finalProducts = result.distinctBy {
+        uniqueProductKey(it.textDescription)
+    }
+
     addLog(
-        "📊 OCR parser result: " +
-            "${finalProducts.size} products"
+        "📊 Cart parser result: " +
+            "${finalProducts.size}/${deals.size} products"
     )
 
     return finalProducts
+}
+
+    private fun smartScrollRabbitCart(
+    parsedProducts: List<CartProduct>,
+    previousSignature: String,
+    sentProducts: Set<String>
+): Boolean {
+    val metrics = resources.displayMetrics
+
+    val startY = metrics.heightPixels * 0.82f
+    val endY = metrics.heightPixels * 0.28f
+
+    addLog(
+        "↕️ Rabbit scroll: " +
+            "start=${startY.toInt()}, " +
+            "end=${endY.toInt()}, " +
+            "parsed=${parsedProducts.size}"
+    )
+
+    val path = Path().apply {
+        moveTo(metrics.widthPixels * 0.50f, startY)
+        lineTo(metrics.widthPixels * 0.50f, endY)
+    }
+
+    val dispatched = dispatchGesture(
+        GestureDescription.Builder()
+            .addStroke(
+                GestureDescription.StrokeDescription(
+                    path,
+                    0L,
+                    1800L
+                )
+            )
+            .build(),
+        null,
+        null
+    )
+
+    if (!dispatched) {
+        addLog("❌ dispatchGesture فشل.")
+        return false
+    }
+
+    Thread.sleep(1800)
+
+    repeat(20) {
+        Thread.sleep(300)
+
+        val newSignature = cartScreenSignature(
+            cartVisibleNodes()
+        )
+
+        if (
+            newSignature.isNotBlank() &&
+                newSignature != previousSignature
+        ) {
+            addLog("✅ تغيرت شاشة السلة.")
+            return true
+        }
+    }
+
+    addLog(
+        "⚠️ لم تتغير الشاشة بعد التمرير؛ " +
+            "قد تكون وصلت إلى نهاية السلة."
+    )
+
+    return false
 }
 
     
@@ -783,9 +921,11 @@ private fun openCartAndSendReport(
                     val ocrText =
                         extractOcrText(bitmap)
 
-                    ocrProducts = parseOcrCartProducts(
-    ocrText
-)
+                    ocrProducts =
+                        parseOcrCartProducts(
+                            ocrText,
+                            deals
+                        )
 
                     addLog(
                         "📊 OCR products=" +
