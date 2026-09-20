@@ -109,110 +109,84 @@ class DealScannerService : AccessibilityService() {
 
 
 
-    private fun parseRabbitCartProducts(nodes: List<NodeData>, deals: List<DealData>): List<CartProduct> {
-        val products = mutableListOf<CartProduct>()
-        var startIndex = 0
-        while (startIndex < nodes.size) {
-            // تخطي أزرار الكمية (- 1 +)
-            while (startIndex < nodes.size && (nodes[startIndex].text.trim() in listOf("1", "-", "+", "2", "3") || (nodes[startIndex].text.trim().matches(Regex("^\\d+$")) && nodes[startIndex].text.length < 3))) {
-                startIndex++
-            }
-            if (startIndex >= nodes.size) break
+    private fun parseRabbitCartProducts(nodes: List<NodeData>): List<CartProduct> {
+    val products = mutableListOf<CartProduct>()
+    var startIndex = 0
+    while (startIndex < nodes.size) {
+        // تخطي أي أزرار كمية متبقية من المنتج السابق
+        while (startIndex < nodes.size && (nodes[startIndex].text.trim() in listOf("1", "-", "+", "2", "3"))) {
+            startIndex++
+        }
+        if (startIndex >= nodes.size) break
 
-            var currencyIndex = -1
-            for (i in startIndex until nodes.size) {
-                val t = nodes[i].text.trim()
-                if (t.contains("جنيه") || t.equals("egp", ignoreCase = true)) {
-                    currencyIndex = i
-                    break
-                }
-            }
-
-            if (currencyIndex != -1) {
-                val chunk = nodes.subList(startIndex, currencyIndex)
-                if (chunk.isNotEmpty()) {
-                    val topY = getRect(chunk[0].node).top
-                    val bottomY = getRect(nodes[currencyIndex].node).bottom
-                    val texts = chunk.map { it.text.trim() }
-                    
-                    // استخراج الأرقام فقط (القروش والجنيهات)
-                    val numbers = texts.filter { it.matches(Regex("^\\d+$")) }
-
-                    if (numbers.size >= 2) {
-                        var oldPrice = 0.0
-                        var newPrice = 0.0
-
-                        // ترتيب قراءة العناصر في الواجهة العربية: قرش جديد -> جنيه جديد -> قرش قديم -> جنيه قديم
-                        if (numbers.size >= 4) {
-                            val oldPound = numbers[numbers.size - 1]
-                            val oldPiaster = numbers[numbers.size - 2]
-                            val newPound = numbers[numbers.size - 3]
-                            val newPiaster = numbers[numbers.size - 4]
-                            
-                            oldPrice = "$oldPound.$oldPiaster".toDoubleOrNull() ?: 0.0
-                            newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
-                        } else {
-                            // في حالة عدم وجود سعر قديم إطلاقاً
-                            val newPound = numbers[numbers.size - 1]
-                            val newPiaster = numbers[numbers.size - 2]
-                            newPrice = "$newPound.$newPiaster".toDoubleOrNull() ?: 0.0
-                        }
-
-                        var discount = 0
-                        if (oldPrice > newPrice && oldPrice > 0) {
-                            discount = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
-                        }
-
-                        var name = texts[0].replace(Regex("^\\d+\\s*-\\s*"), "").trim()
-                        if (texts.size > 1 && texts[1].matches(Regex(".*(قطعة|جم|كجم|مل|لتر|ق|علكة|pcs|pc|g|gm|kg|ml|l).*"))) {
-                            name += " (" + texts[1].replace(Regex("^\\d+\\s*-\\s*"), "").trim() + ")"
-                        }
-
-                        // إذا كان السعر القديم مخفياً، استنتج الخصم من الداتا الملتقطة سابقاً من صفحة العروض
-                        if (discount == 0) {
-                            val bestMatch = deals.maxByOrNull { deal ->
-                                val words = deal.originalName.split(" ").filter { it.length > 2 }
-                                words.count { name.contains(it, ignoreCase = true) }
-                            }
-                            if (bestMatch != null) {
-                                val match = Regex("بخصم (\\d+)%").find(bestMatch.dealText)
-                                if (match != null) {
-                                    discount = match.groupValues[1].toIntOrNull() ?: 0
-                                }
-                            }
-                        }
-
-                        if (discount > 0 && newPrice > 0) {
-                            val formattedPrice = if (newPrice % 1.0 == 0.0) newPrice.toInt().toString() else newPrice.toString()
-                            products.add(CartProduct("$name ب $formattedPrice جنيه بخصم $discount%", topY, bottomY))
-                        }
-                    }
-                }
-                startIndex = currencyIndex + 1
-            } else {
+        var currencyIndex = -1
+        for (i in startIndex until nodes.size) {
+            val t = nodes[i].text.replace(Regex("[\\u202A-\\u202C\\u200E\\u200F]"), "").trim()
+            if (t == "جنيه" || t.equals("egp", ignoreCase = true)) {
+                currencyIndex = i
                 break
             }
         }
-        return products
-    }
 
-private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, visibleNodes: List<NodeData>, previousSignature: String): Boolean {
-    val metrics = resources.displayMetrics
-    val cropTopBoundary = metrics.heightPixels * 0.20f // النقطة التي يبدأ منها قص السكرين شوت
+        if (currencyIndex != -1) {
+            val chunk = nodes.subList(startIndex, currencyIndex)
+            if (chunk.isNotEmpty()) {
+                val topY = getRect(chunk[0].node).top
+                val texts = chunk.map { it.text.replace(Regex("[\\u202A-\\u202C\\u200E\\u200F]"), "").trim() }
+                
+                // استخراج آخر 4 أرقام قبل كلمة جنيه (والتي تمثل أسعار المنتج)
+                val numbers = texts.filter { it.matches(Regex("\\d+")) }
+                if (numbers.size >= 4) {
+                    val last4 = numbers.takeLast(4)
+                    val newPrice = "${last4[1]}.${last4[0]}".toDoubleOrNull() ?: 0.0
+                    val oldPrice = "${last4[3]}.${last4[2]}".toDoubleOrNull() ?: 0.0
 
-    var nextItemTop: Float? = null
-    val lastCurrencyIndex = visibleNodes.indexOfLast { 
-        it.text.replace(Regex("[\\u202A-\\u202C\\u200E\\u200F]"), "").trim().let { t -> t == "جنيه" || t.equals("egp", ignoreCase = true) } 
+                    if (oldPrice > 0 && newPrice > 0 && oldPrice > newPrice) {
+                        val discount = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
+                        
+                        var name = texts[0]
+                        if (texts.size > 1 && texts[1].matches(Regex(".*(قطعة|جم|كجم|مل|لتر|ق|علكة|pcs|pc|g|gm|kg|ml|l).*"))) {
+                            name += " (" + texts[1] + ")"
+                        }
+                        
+                        val formattedPrice = if (newPrice % 1.0 == 0.0) newPrice.toInt().toString() else newPrice.toString()
+                        products.add(CartProduct("$name ب $formattedPrice جنيه بخصم $discount%", topY))
+                    }
+                }
+            }
+            startIndex = currencyIndex + 1
+        } else {
+            break
+        }
     }
-    
-    if (lastCurrencyIndex != -1 && lastCurrencyIndex + 1 < visibleNodes.size) {
-        var tempIndex = lastCurrencyIndex + 1
-        while (tempIndex < visibleNodes.size && visibleNodes[tempIndex].text.trim() in listOf("1", "-", "+", "2", "3")) {
-            tempIndex++
+    return products
+}
+
+private fun smartScrollRabbitCart(parsedProducts: List<CartProduct>, previousSignature: String, sentProducts: Set<String>): Boolean {
+        val metrics = resources.displayMetrics
+        // تحديد نقطة قص الصورة (20%) + مساحة أمان صغيرة لتجنب القطع
+        val targetTopY = metrics.heightPixels * 0.22f 
+
+        val nextProduct = parsedProducts.firstOrNull { 
+            !sentProducts.contains(it.textDescription.substringBefore(" ب ").trim()) 
         }
-        if (tempIndex < visibleNodes.size) {
-            nextItemTop = getRect(visibleNodes[tempIndex].node).top.toFloat()
+
+        val startY = nextProduct?.topY?.toFloat() ?: (metrics.heightPixels * 0.75f)
+
+        if (startY > targetTopY) {
+            val startFactor = (startY / metrics.heightPixels).coerceAtMost(0.85f)
+            val endFactor = 0.22f // السحب سيقف بالضبط أسفل خط قص الصورة
+            swipeUp(startFactor, endFactor, 1600L)
+        } else {
+            swipeUp(0.75f, 0.22f, 1600L)
         }
+
+        repeat(10) {
+            Thread.sleep(300)
+            val newSignature = cartScreenSignature(cartVisibleNodes())
+            if (newSignature.isNotBlank() && newSignature != previousSignature) return true
+        }
+        return false
     }
 
     // سحب العنصر غير المكتمل (أو الأخير) ليكون بالضبط عند حافة قص الصورة
