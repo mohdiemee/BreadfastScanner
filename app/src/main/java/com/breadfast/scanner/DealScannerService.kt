@@ -22,6 +22,11 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+
 
 data class DealData(val originalName: String, val dealText: String, var isAssigned: Boolean = false)
 data class NodeData(val text: String, val node: AccessibilityNodeInfo)
@@ -35,6 +40,7 @@ class DealScannerService : AccessibilityService() {
     private var lastScanTime = 0L
     private var addedItemsCount = 0
     private val rabbitAddAttempts = mutableMapOf<String, Int>()
+    private var arabicOcr: ArabicOcrEngine? = null
 
     private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
 
@@ -108,6 +114,316 @@ class DealScannerService : AccessibilityService() {
     }
 
 
+    private fun ensureOcrReady(): Boolean {
+    if (arabicOcr != null) {
+        return true
+    }
+
+    val engine = ArabicOcrEngine(this)
+
+    val ready = engine.initialize()
+
+    if (!ready) {
+        addLog(
+            "❌ فشل تهيئة OCR. تأكد من وجود " +
+                "ara.traineddata داخل assets/tessdata."
+        )
+        return false
+    }
+
+    arabicOcr = engine
+
+    addLog("✅ تم تهيئة Arabic OCR بنجاح.")
+    return true
+}
+
+
+    override fun onInterrupt() {
+    arabicOcr?.recycle()
+    arabicOcr = null
+}
+
+
+
+    private fun prepareBitmapForOcr(
+    source: Bitmap
+): Bitmap {
+    val result = Bitmap.createBitmap(
+        source.width,
+        source.height,
+        Bitmap.Config.ARGB_8888
+    )
+
+    val canvas = Canvas(result)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    paint.color = Color.WHITE
+    canvas.drawRect(
+        0f,
+        0f,
+        source.width.toFloat(),
+        source.height.toFloat(),
+        paint
+    )
+
+    val matrix = android.graphics.Matrix()
+
+    val scale = minOf(
+        source.width.toFloat() / source.width.toFloat(),
+        source.height.toFloat() / source.height.toFloat()
+    )
+
+    matrix.setScale(scale, scale)
+
+    canvas.drawBitmap(
+        source,
+        matrix,
+        paint
+    )
+
+    return result
+}
+
+
+    private fun extractOcrText(
+    bitmap: Bitmap
+): String {
+    if (!ensureOcrReady()) {
+        return ""
+    }
+
+    val prepared = try {
+        prepareBitmapForOcr(bitmap)
+    } catch (e: Exception) {
+        addLog(
+            "❌ فشل تجهيز صورة OCR: ${e.message}"
+        )
+        return ""
+    }
+
+    return try {
+        val text = arabicOcr?.recognize(prepared) ?: ""
+
+        addLog(
+            "🧠 OCR raw text length=${text.length}"
+        )
+
+        addLog(
+            "🧾 OCR preview: " +
+                text.take(1000)
+        )
+
+        text
+    } finally {
+        if (!prepared.isRecycled) {
+            prepared.recycle()
+        }
+    }
+}
+
+
+
+    private fun normalizeOcrText(
+    text: String
+): String {
+    return text
+        .replace("\u200E", "")
+        .replace("\u200F", "")
+        .replace("\u202A", "")
+        .replace("\u202B", "")
+        .replace("\u202C", "")
+        .replace("\u0640", "")
+        .replace("٫", ".")
+        .replace("٬", ",")
+        .replace("،", ",")
+        .replace("٠", "0")
+        .replace("١", "1")
+        .replace("٢", "2")
+        .replace("٣", "3")
+        .replace("٤", "4")
+        .replace("٥", "5")
+        .replace("٦", "6")
+        .replace("٧", "7")
+        .replace("٨", "8")
+        .replace("٩", "9")
+        .replace(Regex("[ \\t]+"), " ")
+        .trim()
+}
+
+private fun extractOcrNumbers(
+    text: String
+): List<Double> {
+    val normalized = normalizeOcrText(text)
+
+    return Regex(
+        """\d+(?:[.,]\d{1,2})?"""
+    )
+        .findAll(normalized)
+        .mapNotNull {
+            it.value
+                .replace(",", ".")
+                .toDoubleOrNull()
+        }
+        .filter { it > 0.0 && it < 100000.0 }
+        .toList()
+}
+
+private fun calculateDiscount(
+    oldPrice: Double?,
+    newPrice: Double?
+): Int? {
+    if (oldPrice == null || newPrice == null) {
+        return null
+    }
+
+    if (oldPrice <= newPrice || oldPrice <= 0.0) {
+        return null
+    }
+
+    return (
+        ((oldPrice - newPrice) / oldPrice) * 100.0
+        ).toInt()
+}
+
+private fun cleanOcrLine(
+    line: String
+): String {
+    return normalizeOcrText(line)
+        .replace(
+            Regex("""(?i)\bEGP\b"""),
+            ""
+        )
+        .replace("جنيه", "")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
+
+
+private fun parseOcrCartProducts(
+    ocrText: String,
+    deals: List<DealData>
+): List<OcrCartProduct> {
+    val lines = ocrText
+        .lines()
+        .map { cleanOcrLine(it) }
+        .filter { it.isNotBlank() }
+
+    if (lines.isEmpty()) {
+        addLog("⚠️ OCR لم يُرجع أسطرًا.")
+        return emptyList()
+    }
+
+    val products = mutableListOf<OcrCartProduct>()
+
+    val normalizedDeals = deals.map {
+        it to normalizeProductKey(it.originalName)
+    }
+
+    for (dealPair in normalizedDeals) {
+        val deal = dealPair.first
+        val dealName = dealPair.second
+
+        val matchingLines = lines.filter { line ->
+            val normalizedLine =
+                normalizeProductKey(line)
+
+            val words = dealName
+                .split(Regex("\\s+"))
+                .filter { it.length >= 3 }
+
+            val matchedWords = words.count {
+                normalizedLine.contains(it)
+            }
+
+            matchedWords >= maxOf(
+                1,
+                minOf(2, words.size)
+            )
+        }
+
+        if (matchingLines.isEmpty()) {
+            addLog(
+                "⚠️ OCR لم يطابق: " +
+                    deal.originalName
+            )
+            continue
+        }
+
+        val matchedIndex = lines.indexOf(
+            matchingLines.first()
+        )
+
+        val startIndex =
+            maxOf(0, matchedIndex - 1)
+
+        val endIndex =
+            minOf(lines.size, matchedIndex + 6)
+
+        val productBlock = lines
+            .subList(startIndex, endIndex)
+            .joinToString(" ")
+
+        val numbers = extractOcrNumbers(productBlock)
+
+        if (numbers.isEmpty()) {
+            addLog(
+                "⚠️ OCR لم يجد أسعارًا: " +
+                    deal.originalName
+            )
+            continue
+        }
+
+        val newPrice = numbers.minOrNull()
+        val oldPrice = numbers
+            .filter { it > (newPrice ?: 0.0) }
+            .maxOrNull()
+
+        if (newPrice == null) continue
+
+        val discountFromDeal =
+            Regex("بخصم\\s*(\\d+)%")
+                .find(deal.dealText)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.toIntOrNull()
+
+        val calculatedDiscount =
+            calculateDiscount(
+                oldPrice,
+                newPrice
+            )
+
+        val discount =
+            discountFromDeal ?: calculatedDiscount
+
+        val description =
+            "${deal.originalName} ب " +
+                "${formatPrice(newPrice)} جنيه" +
+                (discount?.let {
+                    " بخصم $it%"
+                } ?: "")
+
+        products.add(
+            OcrCartProduct(
+                name = deal.originalName,
+                price = formatPrice(newPrice),
+                oldPrice = oldPrice?.let {
+                    formatPrice(it)
+                },
+                discount = discount
+            )
+        )
+
+        addLog(
+            "✅ OCR product: $description"
+        )
+    }
+
+    return products.distinctBy {
+        normalizeProductKey(it.name)
+    }
+}
+    
     private fun normalizeProductKey(text: String): String {
         return text
             .lowercase(java.util.Locale.ROOT)
@@ -580,32 +896,61 @@ private fun openCartAndSendReport(
                 break
             }
 
-            val batchText = if (
-                parsedNotSentProducts.isNotEmpty()
-            ) {
-                parsedNotSentProducts
-                    .take(5)
-                    .map { it.textDescription }
-            } else {
-                addLog(
-                    "⚠️ Parser لم يقرأ منتجات؛ " +
-                        "استخدام foundDeals كمرجع."
-                )
+            var ocrProducts = emptyList<OcrCartProduct>()
 
-                fallbackDeals.map { it.dealText }
-            }
+val batchText: List<String>
 
-            val captionPrefix =
-                if (sentProducts.isEmpty()) {
-                    "عروض Rabbit 🐰\n\n"
-                } else {
-                    "وعروض Rabbit إضافية 🐰\n\n"
-                }
+if (bitmap != null) {
+    try {
+        val ocrText = extractOcrText(bitmap)
 
-            val caption = (
-                captionPrefix +
-                    batchText.joinToString("\n\n")
-                ).take(1020)
+        ocrProducts = parseOcrCartProducts(
+            ocrText,
+            deals
+        )
+
+        addLog(
+            "📊 OCR products=${ocrProducts.size}"
+        )
+    } catch (e: Exception) {
+        addLog(
+            "❌ خطأ OCR: " +
+                "${e.javaClass.simpleName}: " +
+                "${e.message}"
+        )
+    }
+}
+
+batchText = when {
+    ocrProducts.isNotEmpty() -> {
+        ocrProducts
+            .take(5)
+            .map { it.toDealText() }
+    }
+
+    parsedNotSentProducts.isNotEmpty() -> {
+        parsedNotSentProducts
+            .take(5)
+            .map { it.textDescription }
+    }
+
+    else -> {
+        fallbackDeals
+            .map { it.dealText }
+    }
+}
+
+val captionPrefix =
+    if (sentProducts.isEmpty()) {
+        "عروض Rabbit 🐰\n\n"
+    } else {
+        "وعروض Rabbit إضافية 🐰\n\n"
+    }
+
+val caption = (
+    captionPrefix +
+        batchText.joinToString("\n\n")
+    ).take(1020)
 
             addLog(
                 "📷 التقاط Screenshot للشاشة الحالية: " +
@@ -614,6 +959,21 @@ private fun openCartAndSendReport(
             )
 
             val bitmap = takeScreenshotSync()
+
+            var ocrProducts = emptyList<OcrCartProduct>()
+
+if (bitmap != null) {
+    val ocrText = extractOcrText(bitmap)
+
+    ocrProducts = parseOcrCartProducts(
+        ocrText,
+        deals
+    )
+
+    addLog(
+        "📊 OCR products=${ocrProducts.size}"
+    )
+}
 
             var imageBytes: ByteArray? = null
 
