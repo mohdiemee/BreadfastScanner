@@ -221,12 +221,28 @@ class DealScannerService : AccessibilityService() {
     }
 
     private fun cleanRabbitProductName(name: String): String {
-        return name
-            .replace(Regex("""(?<!\\p{L})\\d{1,4}\\s+(?:00|25|50|75)(?!\\p{L})"""), " ")
-            .replace(Regex("""[-]?\\s*\\d{1,2}\\s*[%٪]-?"""), " ")
-            .replace(Regex("""\\s+"""), " ")
-            .trim()
-    }
+    return name
+        // حذف بقايا السعر التي تظهر مثل:
+        // 00 00 / 25 50 / 50 00 / 152 50
+        .replace(
+            Regex("\\d{1,4}\\s+(?:00|25|50|75)"),
+            " "
+        )
+
+        // حذف بادج الخصم إن تسرب للاسم.
+        .replace(
+            Regex("[-]?\\s*\\d{1,2}\\s*[%٪]-?"),
+            " "
+        )
+
+        // دمج المسافات المتعددة.
+        .replace(
+            Regex("\\s+"),
+            " "
+        )
+
+        .trim()
+}
 
     private fun collectTextBounds(node: AccessibilityNodeInfo?, output: MutableList<TextBounds>) {
         if (node == null) return
