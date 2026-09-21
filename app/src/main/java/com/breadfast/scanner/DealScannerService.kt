@@ -30,6 +30,24 @@ private data class RabbitProductInfo(val name: String, val unit: String?, val sa
 private data class PositionedDeal(val deal: DealData, val top: Int, val score: Int)
 private data class CartProduct(val textDescription: String, val topY: Int, val bottomY: Int)
 
+private data class RabbitCartProduct(
+    val name: String,
+    val price: String,
+    val oldPrice: String?,
+    val discount: Int?,
+    val topY: Int,
+    val bottomY: Int
+) {
+    fun toDealText(): String {
+        val discountText =
+            discount?.let { value ->
+                " بخصم $value%"
+            } ?: ""
+
+        return "$name ب $price جنيه$discountText"
+    }
+}
+
 class DealScannerService : AccessibilityService() {
 
     private var isScanning = false
