@@ -22,9 +22,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
 
 
 data class DealData(val originalName: String, val dealText: String, var isAssigned: Boolean = false)
@@ -39,7 +36,6 @@ class DealScannerService : AccessibilityService() {
     private var lastScanTime = 0L
     private var addedItemsCount = 0
     private val rabbitAddAttempts = mutableMapOf<String, Int>()
-    private var arabicOcr: ArabicOcrEngine? = null
 
     private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
 
@@ -112,665 +108,15 @@ class DealScannerService : AccessibilityService() {
         }
     }
 
-    private fun extractRabbitCardPriceValues(
-    text: String
-): List<Double> {
-    val normalized =
-        text
-            .replace("\u200E", "")
-            .replace("\u200F", "")
-            .replace("\u202A", "")
-            .replace("\u202B", "")
-            .replace("\u202C", "")
-            .replace("\u2060", "")
-            .replace("\u00A0", " ")
-            .replace("٫", ".")
-            .replace("٬", ",")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
 
-    val tokens =
-        Regex(
-            """\d+(?:[.,]\d{1,2})?"""
-        )
-            .findAll(normalized)
-            .map { match ->
-                match.value
-            }
-            .toList()
-
-    if (tokens.isEmpty()) {
-        return emptyList()
-    }
-
-    val values =
-        mutableListOf<Double>()
-
-    var index = 0
-
-    while (index < tokens.size) {
-        val currentToken =
-            tokens[index]
-
-        val currentDigits =
-            currentToken.replace(
-                Regex("""\D"""),
-                ""
-            )
-
-        val nextToken =
-            tokens.getOrNull(index + 1)
-
-        val nextDigits =
-            nextToken
-                ?.replace(
-                    Regex("""\D"""),
-                    ""
-                )
-                .orEmpty()
-
-        if (
-            nextDigits.length == 2 &&
-            !currentToken.contains(".") &&
-            !currentToken.contains(",") &&
-            currentDigits.length <= 4
-        ) {
-            val merged =
-                "$currentDigits.$nextDigits"
-                    .toDoubleOrNull()
-
-            if (
-                merged != null &&
-                merged >= 1.0 &&
-                merged <= 5000.0
-            ) {
-                values.add(merged)
-                index += 2
-                continue
-            }
-        }
-
-        val direct =
-            currentToken
-                .replace(",", ".")
-                .toDoubleOrNull()
-
-        if (
-            direct != null &&
-            direct >= 1.0 &&
-            direct <= 5000.0
-        ) {
-            values.add(direct)
-        }
-
-        index++
-    }
-
-    return values
-        .distinct()
-}
-
-    private fun ensureOcrReady(): Boolean {
-    if (arabicOcr != null) {
-        return true
-    }
-
-    val engine = ArabicOcrEngine(this)
-
-    val ready = engine.initialize()
-
-    if (!ready) {
-        addLog(
-            "❌ فشل تهيئة OCR. تأكد من وجود " +
-                "ara.traineddata داخل assets/tessdata."
-        )
-        return false
-    }
-
-    arabicOcr = engine
-
-    addLog("✅ تم تهيئة Arabic OCR بنجاح.")
-    return true
-}
-
-
-    private fun logRabbitCartAccessibleText() {
-    val root = rootInActiveWindow
-
-    if (root == null) {
-        addLog(
-            "❌ Rabbit Cart Accessibility: " +
-                "rootInActiveWindow = null"
-        )
-        return
-    }
-
-    val metrics = resources.displayMetrics
-
-    val allNodes = mutableListOf<NodeData>()
-
-    extractNodes(
-        node = root,
-        nodesList = allNodes,
-        safeTop = metrics.heightPixels * 0.08f,
-        safeBottom = metrics.heightPixels * 0.94f
-    )
-
-    val visibleTextNodes = allNodes
-        .mapNotNull { item ->
-            val text = normalizeRabbitText(item.text)
-            val rect = getRect(item.node)
-
-            if (
-                text.isBlank() ||
-                rect.isEmpty ||
-                rect.width() <= 0 ||
-                rect.height() <= 0
-            ) {
-                null
-            } else {
-                Triple(text, rect, item.node)
-            }
-        }
-        .distinctBy { item ->
-            "${item.first}|${item.second.left}|" +
-                "${item.second.top}|${item.second.right}|" +
-                "${item.second.bottom}"
-        }
-        .sortedWith(
-            compareBy<Triple<String, Rect, AccessibilityNodeInfo>> {
-                it.second.top
-            }.thenByDescending {
-                it.second.right
-            }
-        )
-
-    addLog(
-        "🔎 Rabbit Cart Accessibility: " +
-            "${visibleTextNodes.size} نصًا ظاهرًا"
-    )
-
-    visibleTextNodes.forEachIndexed { index, item ->
-        val text = item.first
-        val rect = item.second
-
-        addLog(
-            "📱 CartNode #${index + 1}: " +
-                "text=[$text] | " +
-                "x=${rect.left}-${rect.right} | " +
-                "y=${rect.top}-${rect.bottom} | " +
-                "clickable=${item.third.isClickable}"
-        )
-    }
-}
     
     override fun onInterrupt() {
-    arabicOcr?.recycle()
-    arabicOcr = null
-}
-
-
-
-    private fun prepareBitmapForOcr(
-    source: Bitmap
-): Bitmap {
-    val topCrop =
-        (source.height * 0.14f).toInt()
-
-    val bottomCrop =
-        (source.height * 0.23f).toInt()
-
-    val leftCrop =
-        (source.width * 0.20f).toInt()
-
-    val rightCrop =
-        (source.width * 0.02f).toInt()
-
-    val cropWidth =
-        source.width -
-            leftCrop -
-            rightCrop
-
-    val cropHeight =
-        source.height -
-            topCrop -
-            bottomCrop
-
-    if (
-        cropWidth <= 100 ||
-        cropHeight <= 100
-    ) {
-        return source.copy(
-            Bitmap.Config.ARGB_8888,
-            false
-        )
-    }
-
-    val cropped =
-        Bitmap.createBitmap(
-            source,
-            leftCrop,
-            topCrop,
-            cropWidth,
-            cropHeight
-        )
-
-    val scaleFactor = 2.0f
-
-    val scaledWidth =
-        (cropped.width * scaleFactor).toInt()
-
-    val scaledHeight =
-        (cropped.height * scaleFactor).toInt()
-
-    val result = Bitmap.createBitmap(
-        scaledWidth,
-        scaledHeight,
-        Bitmap.Config.ARGB_8888
+    addLog(
+        "⚠️ تم إيقاف خدمة Accessibility."
     )
-
-    val canvas = Canvas(result)
-
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        isFilterBitmap = true
-        isDither = true
-    }
-
-    val destination =
-        Rect(
-            0,
-            0,
-            scaledWidth,
-            scaledHeight
-        )
-
-    canvas.drawColor(Color.WHITE)
-
-    canvas.drawBitmap(
-        cropped,
-        null,
-        destination,
-        paint
-    )
-
-    if (!cropped.isRecycled) {
-        cropped.recycle()
-    }
-
-    return result
 }
 
 
-    private fun extractOcrText(
-    bitmap: Bitmap
-): String {
-    if (!ensureOcrReady()) {
-        return ""
-    }
-
-    val prepared = try {
-        prepareBitmapForOcr(bitmap)
-    } catch (e: Exception) {
-        addLog(
-            "❌ فشل تجهيز صورة OCR: ${e.message}"
-        )
-        return ""
-    }
-
-    return try {
-        val text = arabicOcr?.recognize(prepared) ?: ""
-
-        addLog(
-            "🧠 OCR raw text length=${text.length}"
-        )
-
-        addLog(
-            "🧾 OCR preview: " +
-                text.take(1000)
-        )
-
-        text
-    } finally {
-        if (!prepared.isRecycled) {
-            prepared.recycle()
-        }
-    }
-}
-
-
-    private fun extractOcrWords(
-    bitmap: Bitmap
-): List<OcrWord> {
-    if (!ensureOcrReady()) {
-        return emptyList()
-    }
-
-    val prepared = try {
-        prepareBitmapForOcr(bitmap)
-    } catch (e: Exception) {
-        addLog(
-            "❌ فشل تجهيز صورة OCR Words: " +
-                e.message
-        )
-        return emptyList()
-    }
-
-    return try {
-        val text =
-            arabicOcr?.recognize(prepared)
-                ?: ""
-
-        val blockedLines = listOf(
-            "اختيار جامد",
-            "وفرت",
-            "توصيل ببلاش",
-            "واو ليك",
-            "يلا ندفع",
-            "يللا ندفع",
-            "فضي الكيس",
-            "السلة",
-            "الكيس"
-        )
-
-        val lines = text
-            .replace("\u000C", "")
-            .replace("\r", "")
-            .lines()
-            .map { line ->
-                normalizeOcrText(line)
-                    .replace(
-                        Regex("""[|=_<>~`]"""),
-                        " "
-                    )
-                    .replace(
-                        Regex("""\s+"""),
-                        " "
-                    )
-                    .trim()
-            }
-            .filter { line ->
-                line.isNotBlank()
-            }
-            .filter { line ->
-                val compact =
-                    line.lowercase(
-                        java.util.Locale.ROOT
-                    )
-                        .replace(
-                            Regex("""\s+"""),
-                            ""
-                        )
-
-                blockedLines.none { blocked ->
-                    compact.contains(
-                        blocked.lowercase(
-                            java.util.Locale.ROOT
-                        ).replace(
-                            Regex("""\s+"""),
-                            ""
-                        )
-                    )
-                }
-            }
-
-        val words = mutableListOf<OcrWord>()
-
-        lines.forEachIndexed { lineIndex, line ->
-            val parts = line
-                .split(Regex("""\s+"""))
-                .filter { part ->
-                    part.length >= 1
-                }
-
-            val filteredParts =
-                parts.filter { part ->
-                    val compact =
-                        part.replace(
-                            Regex("""[+\-_=|<>]+"""),
-                            ""
-                        )
-
-                    compact.isNotBlank()
-                }
-
-            filteredParts.forEachIndexed { wordIndex, part ->
-                val left =
-                    (
-                        filteredParts.size -
-                            wordIndex
-                        ) * 40
-
-                words.add(
-                    OcrWord(
-                        text = part,
-                        left = left,
-                        top = lineIndex * 60,
-                        right = left + 35,
-                        bottom = lineIndex * 60 + 45,
-                        confidence = 100f
-                    )
-                )
-            }
-        }
-
-        addLog(
-            "🧠 OCR fallback words count=" +
-                words.size
-        )
-
-        words
-    } catch (e: Exception) {
-        addLog(
-            "❌ OCR fallback words error: " +
-                "${e.javaClass.simpleName}: " +
-                e.message
-        )
-        emptyList()
-    } finally {
-        if (!prepared.isRecycled) {
-            prepared.recycle()
-        }
-    }
-}
-
-    private fun buildOrderedOcrText(
-    words: List<OcrWord>
-): String {
-    if (words.isEmpty()) {
-        return ""
-    }
-
-    val lineTolerance = 32
-
-    val groupedLines =
-        words
-            .sortedBy { word ->
-                word.top
-            }
-            .fold(
-                mutableListOf<MutableList<OcrWord>>()
-            ) { lines, word ->
-                val wordCenterY =
-                    (word.top + word.bottom) / 2
-
-                val targetLine =
-                    lines.firstOrNull { line ->
-                        val lineCenterY =
-                            line
-                                .map { item ->
-                                    (item.top + item.bottom) / 2
-                                }
-                                .average()
-                                .toInt()
-
-                        kotlin.math.abs(
-                            wordCenterY - lineCenterY
-                        ) <= lineTolerance
-                    }
-
-                if (targetLine != null) {
-                    targetLine.add(word)
-                } else {
-                    lines.add(
-                        mutableListOf(word)
-                    )
-                }
-
-                lines
-            }
-
-    return groupedLines
-        .sortedBy { line ->
-            line.minOf { word ->
-                word.top
-            }
-        }
-        .joinToString("\n") { line ->
-            line
-                .sortedByDescending { word ->
-                    word.left
-                }
-                .joinToString(" ") { word ->
-                    word.text
-                }
-                .replace(Regex("""\s+"""), " ")
-                .trim()
-        }
-}
-
-    private fun buildOcrLines(
-    words: List<OcrWord>
-): List<OcrLine> {
-    if (words.isEmpty()) {
-        return emptyList()
-    }
-
-    val lineTolerance = 34
-
-    val groupedLines = mutableListOf<MutableList<OcrWord>>()
-
-    words
-        .sortedBy { word ->
-            word.top
-        }
-        .forEach { word ->
-            val centerY =
-                (word.top + word.bottom) / 2
-
-            val closestLine =
-                groupedLines
-                    .mapNotNull { line ->
-                        if (line.isEmpty()) {
-                            null
-                        } else {
-                            val lineCenterY =
-                                line
-                                    .map { item ->
-                                        (item.top + item.bottom) / 2
-                                    }
-                                    .average()
-                                    .toInt()
-
-                            line to kotlin.math.abs(
-                                centerY - lineCenterY
-                            )
-                        }
-                    }
-                    .filter { pair ->
-                        pair.second <= lineTolerance
-                    }
-                    .minByOrNull { pair ->
-                        pair.second
-                    }
-                    ?.first
-
-            if (closestLine != null) {
-                closestLine.add(word)
-            } else {
-                groupedLines.add(
-                    mutableListOf(word)
-                )
-            }
-        }
-
-    return groupedLines
-        .map { line ->
-            val sortedWords =
-                line.sortedByDescending { word ->
-                    word.left
-                }
-
-            OcrLine(
-                text = sortedWords
-                    .joinToString(" ") { word ->
-                        word.text
-                    }
-                    .replace(Regex("""\s+"""), " ")
-                    .trim(),
-                left = line.minOf { word ->
-                    word.left
-                },
-                top = line.minOf { word ->
-                    word.top
-                },
-                right = line.maxOf { word ->
-                    word.right
-                },
-                bottom = line.maxOf { word ->
-                    word.bottom
-                },
-                words = sortedWords
-            )
-        }
-        .sortedBy { line ->
-            line.top
-        }
-}
-    
-    private fun normalizeOcrText(
-    text: String
-): String {
-    return text
-        .replace("\u200E", "")
-        .replace("\u200F", "")
-        .replace("\u202A", "")
-        .replace("\u202B", "")
-        .replace("\u202C", "")
-        .replace("\u0640", "")
-        .replace("٫", ".")
-        .replace("٬", ",")
-        .replace("،", ",")
-        .replace("٠", "0")
-        .replace("١", "1")
-        .replace("٢", "2")
-        .replace("٣", "3")
-        .replace("٤", "4")
-        .replace("٥", "5")
-        .replace("٦", "6")
-        .replace("٧", "7")
-        .replace("٨", "8")
-        .replace("٩", "9")
-        .replace(Regex("[ \\t]+"), " ")
-        .trim()
-}
-
-private fun extractOcrNumbers(
-    text: String
-): List<Double> {
-    val normalized = normalizeOcrText(text)
-
-    return Regex(
-        """\d+(?:[.,]\d{1,2})?"""
-    )
-        .findAll(normalized)
-        .mapNotNull {
-            it.value
-                .replace(",", ".")
-                .toDoubleOrNull()
-        }
-        .filter { it > 0.0 && it < 100000.0 }
-        .toList()
-}
 
 private fun calculateDiscount(
     oldPrice: Double?,
@@ -789,782 +135,7 @@ private fun calculateDiscount(
         ).toInt()
 }
 
-private fun cleanOcrLine(
-    line: String
-): String {
-    return normalizeOcrText(line)
-        .replace(
-            Regex("""(?i)\bEGP\b"""),
-            ""
-        )
-        .replace("جنيه", "")
-        .replace(Regex("\\s+"), " ")
-        .trim()
-}
 
-private fun parseRabbitOcrProductsByPosition(
-    words: List<OcrWord>,
-    screenshotWidth: Int
-): List<OcrCartProduct> {
-    val lines = buildOcrLines(words)
-
-    if (lines.isEmpty()) {
-        addLog(
-            "⚠️ Rabbit OCR parser: لا توجد أسطر."
-        )
-        return emptyList()
-    }
-
-    val ignoredPhrases = listOf(
-        "اختيار جامد",
-        "وفرت",
-        "يلا ندفع",
-        "يللا ندفع",
-        "توصيل ببلاش",
-        "واو ليك",
-        "فضي الكيس",
-        "السلة",
-        "الكيس",
-        "جنيه",
-        "egp"
-    )
-
-    fun compact(value: String): String {
-        return normalizeOcrText(value)
-            .lowercase(java.util.Locale.ROOT)
-            .replace(
-                Regex("""[\s+\-|=_<>~`]+"""),
-                ""
-            )
-    }
-
-    fun isIgnored(value: String): Boolean {
-        val normalized =
-            compact(value)
-
-        return normalized.isBlank() ||
-            ignoredPhrases.any { phrase ->
-                normalized.contains(
-                    compact(phrase)
-                )
-            }
-    }
-
-    fun cleanName(value: String): String {
-        return normalizeOcrText(value)
-            .replace(
-                Regex(
-                    """(?i)\b(add|favorite|cart|clear|egp)\b"""
-                ),
-                " "
-            )
-            .replace(
-                Regex(
-                    """(أضف|اضف|مفضلة|السلة|فضي الكيس)"""
-                ),
-                " "
-            )
-            .replace(
-                Regex("""[+|=_<>~`]"""),
-                " "
-            )
-            .replace(
-                Regex(
-                    """(?<![\p{L}\p{N}])\d+(?:[.,]\d+)?(?![\p{L}\p{N}])"""
-                ),
-                " "
-            )
-            .replace(
-                Regex("""\s+"""),
-                " "
-            )
-            .trim()
-    }
-
-    fun isUnitLine(value: String): Boolean {
-        return normalizeOcrText(value).matches(
-            Regex(
-                """(?i)^\s*\d*(?:[.,]\d+)?\s*(""" +
-                    """قطعة|قطعه|جم|كجم|مل|لتر|""" +
-                    """علكة|pcs?|pc|g|gm|kg|ml|l|ق""" +
-                    """)\s*$"""
-            )
-        )
-    }
-
-    fun looksLikeName(line: OcrLine): Boolean {
-        val name =
-            cleanName(line.text)
-
-        if (name.length < 5) {
-            return false
-        }
-
-        if (isIgnored(name)) {
-            return false
-        }
-
-        if (isUnitLine(name)) {
-            return false
-        }
-
-        if (
-            name.count { it.isLetter() } < 4
-        ) {
-            return false
-        }
-
-        return true
-    }
-
-    fun extractNumbers(value: String): List<Double> {
-        return Regex(
-            """\d+(?:[.,]\d{1,2})?"""
-        )
-            .findAll(
-                normalizeOcrText(value)
-            )
-            .mapNotNull { match ->
-                match.value
-                    .replace(",", ".")
-                    .toDoubleOrNull()
-            }
-            .filter { number ->
-                number >= 1.0 &&
-                    number <= 5000.0
-            }
-            .toList()
-    }
-
-    fun choosePrices(
-        values: List<Double>
-    ): Pair<Double?, Double?> {
-        val candidates =
-            values
-                .distinct()
-                .sorted()
-
-        if (candidates.isEmpty()) {
-            return null to null
-        }
-
-        if (candidates.size == 1) {
-            return null to candidates.first()
-        }
-
-        val current =
-            candidates.first()
-
-        val old =
-            candidates.firstOrNull { value ->
-                value > current
-            }
-
-        return old to current
-    }
-
-    val products =
-        mutableListOf<OcrCartProduct>()
-
-    var index = 0
-
-    while (index < lines.size) {
-        val firstLine =
-            lines[index]
-
-        if (!looksLikeName(firstLine)) {
-            index++
-            continue
-        }
-
-        val nameLines =
-            mutableListOf<OcrLine>()
-
-        nameLines.add(firstLine)
-
-        var cursor =
-            index + 1
-
-        var priceLine:
-            OcrLine? = null
-
-        while (
-            cursor < lines.size &&
-            cursor <= index + 6
-        ) {
-            val current =
-                lines[cursor]
-
-            val numbers =
-                extractNumbers(current.text)
-
-            if (
-                numbers.isNotEmpty() &&
-                !looksLikeName(current)
-            ) {
-                priceLine = current
-                cursor++
-                break
-            }
-
-            if (looksLikeName(current)) {
-                nameLines.add(current)
-            }
-
-            cursor++
-        }
-
-        if (priceLine == null) {
-            index++
-            continue
-        }
-
-        val name =
-            nameLines
-                .joinToString(" ") { line ->
-                    cleanName(line.text)
-                }
-                .replace(
-                    Regex("""\s+"""),
-                    " "
-                )
-                .trim()
-
-        if (
-            name.length < 5 ||
-            name.count { it.isLetter() } < 4 ||
-            isIgnored(name)
-        ) {
-            index = cursor
-            continue
-        }
-
-        val values =
-            extractNumbers(priceLine.text)
-
-        val prices =
-            choosePrices(values)
-
-        val oldPrice =
-            prices.first
-
-        val newPrice =
-            prices.second
-
-        if (newPrice == null) {
-            addLog(
-                "⚠️ Rabbit OCR: سعر غير صالح لـ $name"
-            )
-            index = cursor
-            continue
-        }
-
-        val discount =
-            calculateDiscount(
-                oldPrice,
-                newPrice
-            )?.takeIf { value ->
-                value in 1..95
-            }
-
-        products.add(
-            OcrCartProduct(
-                name = name,
-                price = formatPrice(newPrice),
-                oldPrice = oldPrice?.let {
-                    formatPrice(it)
-                },
-                discount = discount,
-                topY = nameLines.minOf { line ->
-                    line.top
-                },
-                bottomY = priceLine.bottom
-            )
-        )
-
-        index = cursor
-    }
-
-    val result =
-        products
-            .distinctBy { product ->
-                normalizeProductKey(
-                    product.name
-                )
-            }
-            .sortedBy { product ->
-                product.topY
-            }
-
-    addLog(
-        "📊 Rabbit OCR position parser result: " +
-            "${result.size} products"
-    )
-
-    result.forEach { product ->
-        addLog(
-            "✅ Rabbit OCR product: " +
-                product.toDealText() +
-                " | top=${product.topY}"
-        )
-    }
-
-    return result
-}
-
-private fun parseOcrCartProducts(
-    ocrText: String,
-    deals: List<DealData> = emptyList()
-): List<OcrCartProduct> {
-    val lines = ocrText
-        .lines()
-        .map { cleanOcrLine(it) }
-        .map { line ->
-            line
-                .replace("\u200E", "")
-                .replace("\u200F", "")
-                .replace("\u202A", "")
-                .replace("\u202B", "")
-                .replace("\u202C", "")
-                .replace(Regex("""[|=_<>~`]"""), " ")
-                .replace(Regex("""\s+"""), " ")
-                .trim()
-        }
-        .filter { it.isNotBlank() }
-
-    if (lines.isEmpty()) {
-        addLog("⚠️ OCR parser: لا توجد أسطر.")
-        return emptyList()
-    }
-
-    val ignoredPhrases = listOf(
-        "اختيار جامد",
-        "وفرت",
-        "يلا ندفع",
-        "يللا ندفع",
-        "توصيل ببلاش",
-        "واو ليك",
-        "فضي الكيس",
-        "السلة",
-        "الكيس",
-        "جنيه",
-        "egp"
-    )
-
-    fun compact(text: String): String {
-        return normalizeOcrText(text)
-            .lowercase(java.util.Locale.ROOT)
-            .replace(Regex("""[\s+\-|=_<>~`]+"""), "")
-            .trim()
-    }
-
-    fun isIgnoredLine(line: String): Boolean {
-        val value = compact(line)
-
-        return value.isBlank() ||
-            ignoredPhrases.any { phrase ->
-                value.contains(compact(phrase))
-            }
-    }
-
-    fun isNumericOnlyLine(line: String): Boolean {
-        return normalizeOcrText(line).matches(
-            Regex("""^[\d\s.,:;()+\-]+$""")
-        )
-    }
-
-    fun isUnitLine(line: String): Boolean {
-        val normalized = normalizeOcrText(line)
-
-        return normalized.matches(
-            Regex(
-                """(?i)^\s*\d*(?:[.,]\d+)?\s*(""" +
-                    """قطعة|قطعه|جم|كجم|مل|لتر|""" +
-                    """علكة|pcs?|pc|g|gm|kg|ml|l|ق""" +
-                    """)\s*$"""
-            )
-        )
-    }
-
-    fun cleanProductNamePart(line: String): String {
-        return normalizeOcrText(line)
-            .replace(
-                Regex(
-                    """(?i)\b(add|favorite|cart|clear|egp)\b"""
-                ),
-                " "
-            )
-            .replace(
-                Regex(
-                    """(أضف|اضف|مفضلة|السلة|فضي الكيس|يلا ندفع|يللا ندفع)"""
-                ),
-                " "
-            )
-            .replace(Regex("""[+|=_<>~`]"""), " ")
-            .replace(
-                Regex(
-                    """(?<![\p{L}\p{N}])\d+(?:[.,]\d+)?(?![\p{L}\p{N}])"""
-                ),
-                " "
-            )
-            .replace(Regex("""\s+"""), " ")
-            .trim()
-    }
-
-    fun looksLikeProductLine(line: String): Boolean {
-        val normalized = cleanProductNamePart(line)
-
-        if (normalized.length < 3) {
-            return false
-        }
-
-        if (isIgnoredLine(normalized)) {
-            return false
-        }
-
-        if (isNumericOnlyLine(normalized)) {
-            return false
-        }
-
-        if (isUnitLine(normalized)) {
-            return false
-        }
-
-        if (
-            normalized.contains("جنيه") ||
-            normalized.contains("EGP", ignoreCase = true)
-        ) {
-            return false
-        }
-
-        return normalized.count { it.isLetter() } >= 3
-    }
-
-    fun isPriceLine(line: String): Boolean {
-        val normalized = normalizeOcrText(line)
-
-        if (
-            normalized.contains("جنيه") ||
-            normalized.contains("EGP", ignoreCase = true)
-        ) {
-            return true
-        }
-
-        val numbers = extractOcrNumbers(normalized)
-
-        return numbers.any { value ->
-            value >= 3.0 &&
-                value <= 5000.0
-        }
-    }
-
-    fun normalizePriceToken(token: String): Double? {
-        val cleaned = normalizeOcrText(token)
-            .replace("O", "0", ignoreCase = true)
-            .replace("o", "0")
-            .replace(",", ".")
-            .replace(Regex("""[^\d.]"""), "")
-            .trim()
-
-        if (cleaned.isBlank()) {
-            return null
-        }
-
-        val direct = cleaned.toDoubleOrNull()
-
-        if (
-            direct != null &&
-            direct >= 1.0 &&
-            direct <= 5000.0
-        ) {
-            return direct
-        }
-
-        return null
-    }
-
-    fun fixMissingDecimal(value: Double): Double {
-        val text = formatPrice(value)
-
-        if (
-            "." in text ||
-            value < 1000.0 ||
-            value >= 5000.0
-        ) {
-            return value
-        }
-
-        val digits = text.replace(".", "")
-
-        if (digits.length < 4) {
-            return value
-        }
-
-        val withTwoDecimals =
-            digits.dropLast(2) +
-                "." +
-                digits.takeLast(2)
-
-        val repaired =
-            withTwoDecimals.toDoubleOrNull()
-
-        return if (
-            repaired != null &&
-            repaired >= 1.0 &&
-            repaired <= 3000.0
-        ) {
-            repaired
-        } else {
-            value
-        }
-    }
-
-    fun extractPriceCandidates(
-        priceLines: List<String>
-    ): List<Double> {
-        val result = mutableListOf<Double>()
-
-        for (line in priceLines) {
-            val normalized = normalizeOcrText(line)
-
-            val tokens = Regex(
-                """\d+(?:[.,]\d{1,2})?"""
-            ).findAll(normalized)
-                .map { match ->
-                    match.value
-                }
-                .toList()
-
-            var tokenIndex = 0
-
-            while (tokenIndex < tokens.size) {
-                val currentToken = tokens[tokenIndex]
-
-                val currentValue =
-                    normalizePriceToken(currentToken)
-
-                if (currentValue == null) {
-                    tokenIndex++
-                    continue
-                }
-
-                val nextToken =
-                    tokens.getOrNull(tokenIndex + 1)
-
-                val nextDigits =
-                    nextToken
-                        ?.replace(Regex("""\D"""), "")
-                        .orEmpty()
-
-                if (
-                    nextDigits.length == 2 &&
-                    !currentToken.contains(".") &&
-                    !currentToken.contains(",")
-                ) {
-                    val wholeDigits =
-                        currentToken.replace(
-                            Regex("""\D"""),
-                            ""
-                        )
-
-                    val merged =
-                        "$wholeDigits.$nextDigits"
-                            .toDoubleOrNull()
-
-                    if (
-                        merged != null &&
-                        merged >= 1.0 &&
-                        merged <= 5000.0
-                    ) {
-                        result.add(merged)
-                        tokenIndex += 2
-                        continue
-                    }
-                }
-
-                result.add(
-                    fixMissingDecimal(currentValue)
-                )
-
-                tokenIndex++
-            }
-        }
-
-        return result
-            .filter { value ->
-                value >= 1.0 &&
-                    value <= 5000.0
-            }
-            .distinct()
-            .sorted()
-    }
-
-    fun choosePrices(
-        values: List<Double>
-    ): Pair<Double?, Double?> {
-        val candidates = values
-            .filter { value ->
-                value >= 1.0 &&
-                    value <= 5000.0
-            }
-            .distinct()
-            .sorted()
-
-        if (candidates.isEmpty()) {
-            return null to null
-        }
-
-        if (candidates.size == 1) {
-            return null to candidates.first()
-        }
-
-        val currentPrice =
-            candidates.first()
-
-        val oldPrice =
-            candidates.firstOrNull { value ->
-                value > currentPrice
-            }
-
-        return oldPrice to currentPrice
-    }
-
-    val products = mutableListOf<OcrCartProduct>()
-
-    var index = 0
-
-    while (index < lines.size) {
-        val firstLine = lines[index]
-
-        if (!looksLikeProductLine(firstLine)) {
-            index++
-            continue
-        }
-
-        val productBlock = mutableListOf<String>()
-        productBlock.add(firstLine)
-
-        var cursor = index + 1
-        var priceFound = false
-
-        while (
-            cursor < lines.size &&
-            cursor <= index + 8
-        ) {
-            val line = lines[cursor]
-
-            if (
-                looksLikeProductLine(line) &&
-                productBlock.size > 1
-            ) {
-                break
-            }
-
-            productBlock.add(line)
-
-            if (isPriceLine(line)) {
-                priceFound = true
-                cursor++
-                break
-            }
-
-            cursor++
-        }
-
-        if (!priceFound) {
-            addLog(
-                "⚠️ OCR: لم يتم العثور على سعر بعد: " +
-                    firstLine
-            )
-
-            index++
-            continue
-        }
-
-        val productName = productBlock
-            .filter { line ->
-                looksLikeProductLine(line)
-            }
-            .map { line ->
-                cleanProductNamePart(line)
-            }
-            .joinToString(" ")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
-
-        val lettersCount = productName.count {
-            it.isLetter()
-        }
-
-        if (
-            productName.length < 5 ||
-            lettersCount < 4 ||
-            isIgnoredLine(productName)
-        ) {
-            index = cursor
-            continue
-        }
-
-        val priceLines = productBlock.filter { line ->
-            isPriceLine(line)
-        }
-
-        val values =
-            extractPriceCandidates(priceLines)
-
-        val prices = choosePrices(values)
-
-        val oldPrice = prices.first
-        val newPrice = prices.second
-
-        if (newPrice == null) {
-            addLog(
-                "⚠️ OCR: السعر غير صالح للمنتج: " +
-                    productName
-            )
-
-            index = cursor
-            continue
-        }
-
-        val discount = calculateDiscount(
-            oldPrice,
-            newPrice
-        )?.takeIf { value ->
-            value in 1..95
-        }
-
-        val product = OcrCartProduct(
-            name = productName,
-            price = formatPrice(newPrice),
-            oldPrice = oldPrice?.let { price ->
-                formatPrice(price)
-            },
-            discount = discount
-        )
-
-        products.add(product)
-
-        addLog(
-            "✅ OCR product: " +
-                product.toDealText()
-        )
-
-        index = cursor
-    }
-
-    val finalProducts = products
-        .distinctBy { product ->
-            normalizeProductKey(product.name)
-        }
-
-    addLog(
-        "📊 OCR parser result: " +
-            "${finalProducts.size} products"
-    )
-
-    return finalProducts
-}
     
     private fun normalizeProductKey(text: String): String {
         return text
@@ -1584,13 +155,7 @@ private fun parseOcrCartProducts(
             .trim()
     }
 
-    private fun uniqueProductKey(text: String): String {
-        return normalizeProductKey(
-            text.substringBefore(" بخصم")
-                .substringBefore(" ب ")
-                .trim()
-        )
-    }
+    
 
     private fun formatPrice(value: Double): String {
         return if (value % 1.0 == 0.0) {
@@ -1602,226 +167,10 @@ private fun parseOcrCartProducts(
         }
     }
 
-    private fun isNumericToken(text: String): Boolean {
-        return text.trim().replace(",", ".").matches(
-            Regex("^\\d+(?:[.,]\\d{1,2})?$")
-        )
-    }
-
-    private fun numericValue(text: String): Double? {
-        return text.trim()
-            .replace(",", ".")
-            .toDoubleOrNull()
-    }
-
-    private fun isUnitText(text: String): Boolean {
-        return text.matches(
-            Regex(
-                "(?i).*\\b(" +
-                    "قطعة|قطعه|جم|كجم|مل|لتر|ق|علكة|pcs?|pc|g|gm|kg|ml|l" +
-                    ")\\b.*"
-            )
-        )
-    }
-
-    private fun parseRabbitCartProducts(
-    nodes: List<NodeData>,
-    deals: List<DealData>
-): List<CartProduct> {
-    if (nodes.isEmpty()) {
-        addLog("⚠️ Cart parser: لا توجد Accessibility nodes.")
-        return emptyList()
-    }
-
-    val result = mutableListOf<CartProduct>()
-
-    val orderedNodes = nodes
-        .mapNotNull { item ->
-            val text = normalizeRabbitText(item.text)
-            val rect = getRect(item.node)
-
-            if (text.isBlank() || rect.isEmpty) {
-                null
-            } else {
-                NodeData(text, item.node)
-            }
-        }
-        .sortedBy { getRect(it.node).top }
-
-    val normalizedDeals = deals.map { deal ->
-        deal to normalizeProductKey(deal.originalName)
-    }
-
-    val usedDeals = mutableSetOf<String>()
-
-    for (index in orderedNodes.indices) {
-        val current = orderedNodes[index]
-        val currentText = normalizeProductKey(current.text)
-
-        if (currentText.length < 3) continue
-        if (isNumericToken(current.text)) continue
-        if (isUnitText(current.text)) continue
-        if (current.text == "+" || current.text == "-") continue
-
-        val matchedDeal = normalizedDeals
-            .filter { (_, normalizedName) ->
-                !usedDeals.contains(normalizedName)
-            }
-            .map { pair ->
-                val deal = pair.first
-                val normalizedName = pair.second
-                val words = normalizedName
-                    .split(Regex("\\s+"))
-                    .filter { it.length >= 3 }
-
-                val score = words.count { word ->
-                    currentText.contains(word)
-                }
-
-                Triple(deal, normalizedName, score)
-            }
-            .maxByOrNull { it.third }
-
-        if (matchedDeal == null || matchedDeal.third == 0) {
-            continue
-        }
-
-        val deal = matchedDeal.first
-        val dealKey = matchedDeal.second
-
-        val productRect = getRect(current.node)
-        val productTop = productRect.top
-
-        val nextProductTop = normalizedDeals
-            .filter { (_, name) ->
-                name != dealKey &&
-                    !usedDeals.contains(name)
-            }
-            .mapNotNull { (_, name) ->
-                orderedNodes
-                    .filter { node ->
-                        val nodeText = normalizeProductKey(node.text)
-                        nodeText.contains(
-                            name.split(Regex("\\s+"))
-                                .firstOrNull { it.length >= 3 }
-                                ?: ""
-                        )
-                    }
-                    .map { getRect(it.node).top }
-                    .filter { it > productTop }
-                    .minOrNull()
-            }
-            .minOrNull()
-
-        val productBottom = nextProductTop
-            ?.minus(5)
-            ?: (
-                orderedNodes
-                    .map { getRect(it.node).bottom }
-                    .filter { it > productTop }
-                    .minOrNull()
-                    ?: productRect.bottom
-                )
-
-        val numericValues = mutableListOf<Double>()
-
-        for (j in index until orderedNodes.size) {
-            val node = orderedNodes[j]
-            val rect = getRect(node.node)
-
-            if (rect.top > productBottom + 20) break
-
-            if (isNumericToken(node.text)) {
-                numericValue(node.text)?.let {
-                    if (it > 0.0 && it < 100000.0) {
-                        numericValues.add(it)
-                    }
-                }
-            }
-        }
-
-        if (numericValues.isEmpty()) {
-            addLog(
-                "⚠️ لم يتم العثور على سعر للمنتج: " +
-                    deal.originalName
-            )
-            continue
-        }
-
-        val newPrice = numericValues.minOrNull() ?: continue
-
-        val discountFromDeal = Regex(
-            "بخصم\\s*(\\d+)%"
-        )
-            .find(deal.dealText)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toIntOrNull()
-            ?: 0
-
-        val oldPrice = numericValues
-            .filter { it > newPrice }
-            .maxOrNull()
-
-        val calculatedDiscount =
-            if (
-                oldPrice != null &&
-                    oldPrice > newPrice
-            ) {
-                (((oldPrice - newPrice) / oldPrice) * 100)
-                    .toInt()
-            } else {
-                0
-            }
-
-        val discount = maxOf(
-            discountFromDeal,
-            calculatedDiscount
-        )
-
-        if (discount <= 0) {
-            addLog(
-                "⚠️ تعذر تحديد الخصم: " +
-                    deal.originalName
-            )
-            continue
-        }
-
-        val description =
-            "${deal.originalName} ب " +
-                "${formatPrice(newPrice)} جنيه " +
-                "بخصم $discount%"
-
-        result.add(
-            CartProduct(
-                textDescription = description,
-                topY = productTop,
-                bottomY = productBottom
-            )
-        )
-
-        usedDeals.add(dealKey)
-
-        addLog(
-            "🧾 Cart product: $description | " +
-                "top=$productTop | bottom=$productBottom"
-        )
-    }
-
-    val finalProducts = result.distinctBy {
-        uniqueProductKey(it.textDescription)
-    }
-
-    addLog(
-        "📊 Cart parser result: " +
-            "${finalProducts.size}/${deals.size} products"
-    )
-
-    return finalProducts
-}
 
 
-    private fun parseRabbitCartProductsFromAccessibility(): List<OcrCartProduct> {
+
+    private fun parseRabbitCartProductsFromAccessibility(): List<RabbitCartProduct> {
     val root = rootInActiveWindow
 
     if (root == null) {
@@ -1938,17 +287,12 @@ private fun parseOcrCartProducts(
                 )
         }
 
-        result = result
+        return result
             .replace("جنيه", " ", ignoreCase = true)
             .replace("EGP", " ", ignoreCase = true)
-            .replace(
-                Regex("""[+|=_<>~`]"""),
-                " "
-            )
+            .replace(Regex("""[+|=_<>~`]"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
-
-        return result
     }
 
     fun extractNumericTokens(
@@ -2073,20 +417,10 @@ private fun parseOcrCartProducts(
             return null to null
         }
 
-        /*
-         * في نص Rabbit:
-         * السعر الحالي يظهر قبل السعر القديم،
-         * ثم تأتي كمية السلة غالبًا في نهاية النص.
-         *
-         * لذلك نختار آخر سعرين صالحين،
-         * وليس أصغر رقم في البطاقة.
-         */
         val currentPrice =
-            candidates
-                .getOrNull(
-                    candidates.size - 2
-                )
-                ?: candidates.last()
+            candidates.getOrNull(
+                candidates.size - 2
+            ) ?: candidates.last()
 
         val oldPrice =
             candidates.lastOrNull()
@@ -2113,7 +447,7 @@ private fun parseOcrCartProducts(
                 )
         }
 
-        result = result
+        return result
             .replace(
                 Regex(
                     """\d+(?:[.,]\d{1,2})?"""
@@ -2125,8 +459,6 @@ private fun parseOcrCartProducts(
             .replace(Regex("""[+|=_<>~`]"""), " ")
             .replace(Regex("""\s+"""), " ")
             .trim()
-
-        return result
     }
 
     val ignoredPhrases =
@@ -2155,7 +487,7 @@ private fun parseOcrCartProducts(
             }
 
     val products =
-        mutableListOf<OcrCartProduct>()
+        mutableListOf<RabbitCartProduct>()
 
     rawCards.forEach { card ->
         val cardText =
@@ -2231,7 +563,7 @@ private fun parseOcrCartProducts(
             }
 
         val product =
-            OcrCartProduct(
+            RabbitCartProduct(
                 name = productName,
                 price = formatPrice(newPrice),
                 oldPrice = oldPrice?.let { value ->
@@ -2271,9 +603,7 @@ private fun parseOcrCartProducts(
 }
     
     private fun smartScrollRabbitCart(
-    parsedProducts: List<CartProduct>,
-    previousSignature: String,
-    sentProducts: Set<String>
+    previousSignature: String
 ): Boolean {
     val metrics = resources.displayMetrics
 
@@ -2283,13 +613,19 @@ private fun parseOcrCartProducts(
     addLog(
         "↕️ Rabbit scroll: " +
             "start=${startY.toInt()}, " +
-            "end=${endY.toInt()}, " +
-            "parsed=${parsedProducts.size}"
+            "end=${endY.toInt()}"
     )
 
     val path = Path().apply {
-        moveTo(metrics.widthPixels * 0.50f, startY)
-        lineTo(metrics.widthPixels * 0.50f, endY)
+        moveTo(
+            metrics.widthPixels * 0.50f,
+            startY
+        )
+
+        lineTo(
+            metrics.widthPixels * 0.50f,
+            endY
+        )
     }
 
     val dispatched = dispatchGesture(
@@ -2322,7 +658,7 @@ private fun parseOcrCartProducts(
 
         if (
             newSignature.isNotBlank() &&
-                newSignature != previousSignature
+            newSignature != previousSignature
         ) {
             addLog("✅ تغيرت شاشة السلة.")
             return true
@@ -2580,9 +916,7 @@ private fun openCartAndSendReport(
                                 e.message
                         )
                     } finally {
-                        if (
-                            !bitmap.isRecycled
-                        ) {
+                        if (!bitmap.isRecycled) {
                             bitmap.recycle()
                         }
                     }
@@ -2674,15 +1008,13 @@ private fun openCartAndSendReport(
 
         val moved = try {
             smartScrollRabbitCart(
-                parsedProducts = emptyList(),
-                previousSignature = signature,
-                sentProducts = sentProducts
+                previousSignature = signature
             )
         } catch (e: Exception) {
             addLog(
                 "❌ خطأ أثناء تمرير السلة: " +
                     "${e.javaClass.simpleName}: " +
-                        e.message
+                    e.message
             )
             false
         }
@@ -2703,7 +1035,6 @@ private fun openCartAndSendReport(
             "${sentProducts.size} منتجات."
     )
 }
-
 
 @TargetApi(30)
 private fun sendBreadfastCartReport(
@@ -3194,14 +1525,7 @@ private fun sendBreadfastCartReport(
         return bestCandidate
     }
 
-    private fun extractAllTextsFromCard(node: AccessibilityNodeInfo?, texts: MutableList<String>) {
-        if (node == null) return
-        val t = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
-        if (t.isNotEmpty()) texts.add(t)
-        for (i in 0 until node.childCount) {
-            extractAllTextsFromCard(node.getChild(i), texts)
-        }
-    }
+
 
     // ==========================================
     // منطق تطبيق رابيت (Rabbit Automation)
@@ -4263,9 +2587,5 @@ private fun takeScreenshotSync(): Bitmap? {
         return completed
     }
 
-    private fun isCartEmpty(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val emptyText = findNodeByText(root, "السلة فارغة") ?: findNodeByText(root, "فارغة")
-        return emptyText != null || (findNodeByText(root, "مسح الكل") == null && findNodeByText(root, "Clear All") == null)
-    }
+    
 }
