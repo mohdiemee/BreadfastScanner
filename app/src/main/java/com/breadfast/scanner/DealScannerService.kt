@@ -166,36 +166,49 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         val products = mutableListOf<BreadfastCartProduct>()
 
         // تجاهل قسم "يعجب الناس ايضا" وما تحته تماماً
-        val recommendedNode = nodes.find { it.text.contains("يعجب الناس", ignoreCase = true) }
+        val recommendedNode = nodes.find { 
+            it.text.contains("يعجب", ignoreCase = true) || it.text.contains("الناس", ignoreCase = true) 
+        }
         val limitY = recommendedNode?.node?.let { getRect(it).top } ?: Int.MAX_VALUE
 
         val validNodes = nodes.filter { getRect(it.node).bottom < limitY }
 
         // البحث عن عقد النصوص التي تحتوي على العملة "ج.م"
-        val priceNodes = validNodes.filter { it.text.contains("ج.م") && !it.text.contains("باقي") }
+        val priceNodes = validNodes.filter { 
+            it.text.contains("ج.م") && 
+            !it.text.contains("باقي") && 
+            !it.text.contains("رسوم") && 
+            !it.text.contains("متابعة") 
+        }
 
         for (priceNode in priceNodes) {
             val pRect = getRect(priceNode.node)
             
-            // البحث عن اسم المنتج وهو عادة عقدة نصية فوق السعر أو بجانبه
+            // البحث عن اسم المنتج مع فلترة الوصف البرمجي للصور
             val nameNode = validNodes.filter {
                 val nRect = getRect(it.node)
-                nRect.bottom <= pRect.bottom + 40 && 
-                nRect.top >= pRect.top - 300 && 
-                !it.text.contains("ج.م") &&
-                !it.text.matches(Regex("""\d+""")) && 
-                it.text.length > 4 &&
-                !it.text.contains("السلة") &&
-                !it.text.contains("نقطة") &&
-                !it.text.contains("مسح الكل")
+                val textLower = it.text.lowercase(java.util.Locale.ROOT)
+                nRect.bottom <= pRect.bottom + 60 && 
+                nRect.top >= pRect.top - 350 && 
+                !textLower.contains("ج.م") &&
+                !textLower.matches(Regex("""\d+""")) && 
+                textLower.length > 3 &&
+                !textLower.contains("السلة") &&
+                !textLower.contains("نقطة") &&
+                !textLower.contains("مسح الكل") &&
+                !textLower.contains("product_") && // التعديل: تجاهل الأسماء البرمجية للصور
+                !textLower.contains("_image")
             }.minByOrNull { Math.abs(getRect(it.node).bottom - pRect.top) }
 
             if (nameNode != null) {
                 val name = normalizeRabbitText(nameNode.text) 
                 
-                // استخراج السعر وتحويله لعدد صحيح لقطع القروش تماماً
-                val priceStr = priceNode.text.replace(Regex("""[^\d.,]"""), "").replace(",", ".")
-                    .toDoubleOrNull()?.toInt()?.toString() ?: priceNode.text.replace(Regex("""[^\d]"""), "")
+                // التعديل: تنظيف السعر من الرموز المخفية أولاً، ثم تحويله وإزالة القروش
+                val rawPriceText = normalizeRabbitText(priceNode.text)
+                val cleanPriceText = rawPriceText.replace(Regex("""[^\d.,]"""), "").replace(",", ".")
+                
+                val priceStr = cleanPriceText.toDoubleOrNull()?.toInt()?.toString() 
+                    ?: cleanPriceText.replace(Regex("""[^\d]"""), "")
                 
                 products.add(
                     BreadfastCartProduct(
