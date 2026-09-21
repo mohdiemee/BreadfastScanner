@@ -1406,16 +1406,31 @@ private fun sendBreadfastCartReport(
         }
     }
 
-    private fun normalizeRabbitText(text: String): String {
-        return text.replace("\n", " ").replace(Regex("\\s+"), " ").trim()
+private fun normalizeRabbitText(text: String): String {
+        return text
+            .replace("\u200E", "")
+            .replace("\u200F", "")
+            .replace("\u202A", "")
+            .replace("\u202B", "")
+            .replace("\u202C", "")
+            .replace("\u2060", "")
+            .replace("\u00A0", " ")
+            .replace("\n", " ")
+            .replace(Regex("""\s+"""), " ")
+            .trim()
     }
 
     private fun extractRabbitSalePrice(rawText: String): String? {
         val normalized = normalizeRabbitText(rawText)
-        if (!normalized.contains(Regex("""(?i)\bEGP\b|جنيه"""))) return null
         
-        // استخراج جميع الأرقام التي تبدو كأسعار
-        val priceTokens = Regex("""\d+(?:[.,]\d{1,2})?""").findAll(normalized)
+        // أخذ الجزء الذي يلي كلمة EGP أو جنيه فقط للبحث عن الأسعار بداخله
+        val priceSectionMatch = Regex("""(?i)(?:EGP|جنيه)\s*(.*)""").find(normalized)
+        if (priceSectionMatch == null) return null
+        
+        val priceText = priceSectionMatch.groupValues[1]
+
+        // استخراج جميع الأرقام التي تبدو كأسعار من قسم الأسعار فقط
+        val priceTokens = Regex("""\d+(?:[.,]\d{1,2})?""").findAll(priceText)
             .map { it.value.replace(",", ".") }.toList()
         
         if (priceTokens.isEmpty()) return null
@@ -1435,9 +1450,9 @@ private fun sendBreadfastCartReport(
             }
         }
         
-        // السعر الحالي (الخصم) هو دائماً الرقم الأصغر
+        // السعر الحالي (الخصم) هو دائماً الرقم الأصغر بعد كلمة EGP
         val minPrice = combinedPrices.minOrNull()
-        return minPrice?.toString()
+        return minPrice?.toString()?.removeSuffix(".0")
     }
 
     private fun extractRabbitProductInfo(cardNode: AccessibilityNodeInfo): RabbitProductInfo? {
@@ -1448,19 +1463,22 @@ private fun sendBreadfastCartReport(
         
         // دعم شامل للوحدات الإنجليزية والعربية
         val unitRegex = Regex("""(?i)\b\d+(?:[.,]\d+)?\s*(?:kg|gm|g|ml|l|pcs?|pc|جم|مل|لتر|قطعة|علكة)\b""")
-        val unit = unitRegex.find(rawText)?.value?.replace(",", ".")?.trim()
         
+        // التعديل: استخراج الجزء الخاص بالاسم والوحدة فقط (ما قبل العملة) لعزله تماماً عن الأسعار
         val beforeCurrency = Regex("""(?i)\bEGP\b|جنيه""").find(rawText)
             ?.let { rawText.substring(0, it.range.first) } ?: rawText
             
+        // التعديل: البحث عن الوحدة داخل الجزء الذي يسبق العملة فقط
+        val unit = unitRegex.find(beforeCurrency)?.value?.replace(",", ".")?.trim()
+        
         var name = beforeCurrency
-            .replace(Regex("""[-]?\s*\d{1,2}\s*[%٪]-?"""), "") 
-            .replace(Regex("""(?i)\badd\b|أضف|اضف"""), "")
-            .replace(Regex("""(?i)\bfavorite\b|مفضلة"""), "")
-            .replace(Regex("""\+"""), "")
-            .replace(unitRegex, "")
-            .replace(Regex("""\b\d+(?:[.,]\d+)?\b"""), "") 
-            .replace(Regex("\\s+"), " ")
+            .replace(Regex("""[-]?\s*\d{1,2}\s*[%٪]-?"""), " ") 
+            .replace(Regex("""(?i)\badd\b|أضف|اضف"""), " ")
+            .replace(Regex("""(?i)\bfavorite\b|مفضلة"""), " ")
+            .replace(Regex("""[-+]"""), " ") // التعديل: إزالة علامات الجمع والطرح الخاصة بعداد الكمية
+            .replace(unitRegex, " ")
+            .replace(Regex("""\b\d+(?:[.,]\d+)?\b"""), " ") // التعديل: سيمسح الآن أي قروش أو أرقام كميات متبقية بكفاءة
+            .replace(Regex("""\s+"""), " ")
             .trim()
             
         name = name.replace("EGP", "", ignoreCase = true)
@@ -1496,8 +1514,10 @@ private fun sendBreadfastCartReport(
 
         // تحديد لغة التطبيق لضبط الإحداثيات المتوقعة
         val isArabic = isRabbitInArabic()
-        val expectedX = if (isArabic) cardRect.left + (cardRect.width() * 0.20f) else cardRect.left + (cardRect.width() * 0.80f)
-        val expectedY = cardRect.top + (cardRect.height() * 0.43f)
+        
+        // التعديل: الزر يقع تقريباً في منتصف الكارت (45% للأسفل) مع تعديل الإزاحة الأفقية
+        val expectedX = if (isArabic) cardRect.left + (cardRect.width() * 0.15f) else cardRect.left + (cardRect.width() * 0.85f)
+        val expectedY = cardRect.top + (cardRect.height() * 0.45f) 
         
         var bestCandidate: AccessibilityNodeInfo? = null
         var bestScore = Float.NEGATIVE_INFINITY
@@ -1523,11 +1543,11 @@ private fun sendBreadfastCartReport(
                 // دعم الكلمات العربية (أضف/اضف) بجانب العلامات
                 val isTextAddButton = text == "+" || desc == "+" || combined == "add" || combined.contains("add to cart") || combined.contains("أضف") || combined.contains("اضف")
                 
-                // تحديد نطاق البحث الهندسي: (0.02 إلى 0.42 لليسار) أو (0.58 إلى 0.98 لليمين)
-                val isValidXRatio = if (isArabic) centerXRatio in 0.02f..0.42f else centerXRatio in 0.58f..0.98f
+                // التعديل: تضييق نطاق البحث ليكون حول منتصف الكارت عمودياً (0.30 إلى 0.65) وأدق أفقياً
+                val isValidXRatio = if (isArabic) centerXRatio in 0.02f..0.40f else centerXRatio in 0.60f..0.98f
                 
                 val isGeometryAddButton = node.isClickable && combined.isBlank() && width in 40f..250f && height in 40f..250f &&
-                                          aspectRatio in 0.65f..1.45f && isValidXRatio && centerYRatio in 0.18f..0.72f
+                                          aspectRatio in 0.65f..1.45f && isValidXRatio && centerYRatio in 0.30f..0.65f
 
                 if (isTextAddButton || isGeometryAddButton) {
                     val distance = kotlin.math.abs(rect.centerX() - expectedX) + kotlin.math.abs(rect.centerY() - expectedY)
