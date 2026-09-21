@@ -44,7 +44,10 @@ private data class RabbitCartProduct(
                 " بخصم $value%"
             } ?: ""
 
-        return "$name ب $price جنيه$discountText"
+        // استبدال الرموز الخاصة لتجنب أعطال التنسيق (HTML Parse) في تليجرام
+        val safeName = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        return "<code>$safeName</code> ب $price جنيه$discountText"
     }
 }
 
