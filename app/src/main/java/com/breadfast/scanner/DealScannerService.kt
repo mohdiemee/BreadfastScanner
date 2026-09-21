@@ -1714,6 +1714,85 @@ private fun sendBreadfastCartReport(
         }
     }
 
+    private fun analyzeRabbitDeals(
+        nodesList: List<NodeData>, minDiscount: Int, deals: MutableList<DealData>, 
+        processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
+        cooldownMillis: Long, prefs: SharedPreferences
+    ): Boolean {
+        val processedCards = mutableSetOf<String>()
+        
+        for (current in nodesList) {
+            val badgeText = current.text.trim()
+            val discountMatch = Regex("""[-]?\s*(\d{1,2})\s*[%٪]-?""").find(badgeText) ?: continue
+            val discountPercent = discountMatch.groupValues[1].toIntOrNull() ?: continue
+            if (discountPercent < minDiscount) continue
+            
+            val productCard = findRabbitProductCard(current.node)
+            if (productCard == null) continue
+            
+            val cardRect = getRect(productCard)
+            val cardKey = "${cardRect.left}:${cardRect.top}:${cardRect.right}:${cardRect.bottom}"
+            if (!processedCards.add(cardKey)) continue
+            
+            val productInfo = extractRabbitProductInfo(productCard)
+            if (productInfo == null || productInfo.name.length < 3) continue
+            
+            val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
+            
+            // التعديل: تم نقل اللوج بعد هذه السطور حتى لا يتم تسجيل المنتج إلا إذا كان جديداً ولم يتم تسجيله من قبل
+            if (processed.contains(productKey)) continue
+            val lastSent = historyMap[productKey]
+            if (lastSent != null && System.currentTimeMillis() - lastSent < cooldownMillis) continue
+            
+            val attempts = rabbitAddAttempts[productKey] ?: 0
+            if (attempts >= 3) continue
+
+            // مكان اللوج الصحيح: يظهر مرة واحدة فقط لكل منتج جديد يكتشفه البوت
+            addLog("🔎 يحقق شرط الخصم ($discountPercent%): ${productInfo.name} - السعر: ${productInfo.salePrice ?: "غير متاح"}")
+
+            var plusClicked = false
+            
+            val addButton = findRabbitAddButton(productCard)
+            if (addButton != null) {
+                plusClicked = clickNodeCenter(addButton)
+            }
+
+            if (!plusClicked) {
+                rabbitAddAttempts[productKey] = attempts + 1
+                addLog("⚠️ Rabbit: تعذر النقر الآمن لـ ${productInfo.name} (محاولة ${attempts + 1}/3)")
+                continue
+            }
+            
+            rabbitAddAttempts.remove(productKey)
+            
+            val displayName = buildString {
+                append(productInfo.name)
+                if (!productInfo.unit.isNullOrBlank()) {
+                    append(" (").append(productInfo.unit).append(")")
+                }
+            }
+            
+            // تحويل الرموز لتجنب أخطاء تليجرام عند استخدام وضع HTML
+            val safeDisplayName = displayName.toString().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+            val dealText = buildString {
+                append("<code>").append(safeDisplayName).append("</code>")
+                if (!productInfo.salePrice.isNullOrBlank()) {
+                    append(" ب ").append(productInfo.salePrice).append(" جنيه")
+                }
+                append(" بخصم ").append(discountPercent).append("%")
+            }
+            
+            deals.add(DealData(originalName = productInfo.name, dealText = dealText))
+            processed.add(productKey)
+            historyMap[productKey] = System.currentTimeMillis()
+            saveHistoryMap(prefs, historyMap)
+            addLog("✅ Rabbit: تمت إضافة عرض: $dealText")
+            
+            return true 
+        }
+        return false
+    }
     
     // ==========================================
     // منطق تطبيق بريدفاست القديم (Breadfast Automation)
@@ -2262,6 +2341,7 @@ private fun takeScreenshotSync(): Bitmap? {
 
             writeField("chat_id", chatId.trim())
             writeField("caption", caption)
+            writeField("parse_mode", "HTML") // التعديل: تفعيل وضع HTML لدعم النصوص
             writeField("reply_markup", replyMarkup)
 
             output.writeBytes(
