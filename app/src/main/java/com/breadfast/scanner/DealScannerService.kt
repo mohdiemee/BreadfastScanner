@@ -44,10 +44,26 @@ private data class RabbitCartProduct(
                 " بخصم $value%"
             } ?: ""
 
-        // استبدال الرموز الخاصة لتجنب أعطال التنسيق (HTML Parse) في تليجرام
-        val safeName = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        // فصل اسم المنتج عن الوحدة (التي تكون دائماً بين قوسين في نهاية الاسم)
+        val lastOpenParen = name.lastIndexOf("(")
+        val lastCloseParen = name.lastIndexOf(")")
+        
+        val baseName: String
+        val unitStr: String
+        
+        if (lastOpenParen != -1 && lastCloseParen != -1 && lastCloseParen > lastOpenParen) {
+            baseName = name.substring(0, lastOpenParen).trim()
+            unitStr = " " + name.substring(lastOpenParen, lastCloseParen + 1)
+        } else {
+            baseName = name
+            unitStr = ""
+        }
 
-        return "<code>$safeName</code> ب $price جنيه$discountText"
+        // استبدال الرموز الخاصة لتجنب أعطال التنسيق (HTML Parse) لاسم المنتج فقط
+        val safeName = baseName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        // وضع اسم المنتج فقط داخل كود الـ Monospace، والوحدة بالخارج
+        return "<code>$safeName</code>$unitStr ب $price جنيه$discountText"
     }
 }
 
@@ -1423,8 +1439,8 @@ private fun normalizeRabbitText(text: String): String {
     private fun extractRabbitSalePrice(rawText: String): String? {
         val normalized = normalizeRabbitText(rawText)
         
-        // أخذ الجزء الذي يلي كلمة EGP أو جنيه فقط للبحث عن الأسعار بداخله
-        val priceSectionMatch = Regex("""(?i)(?:EGP|جنيه)\s*(.*)""").find(normalized)
+        // قصر البحث على الأرقام التي تأتي مباشرة بعد العملة، لتجنب التقاط رقم الخصم المئوي
+        val priceSectionMatch = Regex("""(?i)(?:EGP|جنيه)[^\d]*([\d\s.,]+)""").find(normalized)
         if (priceSectionMatch == null) return null
         
         val priceText = priceSectionMatch.groupValues[1]
@@ -1450,8 +1466,9 @@ private fun normalizeRabbitText(text: String): String {
             }
         }
         
-        // السعر الحالي (الخصم) هو دائماً الرقم الأصغر بعد كلمة EGP
-        val minPrice = combinedPrices.minOrNull()
+        // تصفية الأرقام الصغيرة جداً (لتفادي الكميات)، واختيار السعر الأقل
+        val validPrices = combinedPrices.filter { it > 2.0 }
+        val minPrice = validPrices.minOrNull()
         return minPrice?.toString()?.removeSuffix(".0")
     }
 
@@ -1788,18 +1805,16 @@ private fun normalizeRabbitText(text: String): String {
             
             rabbitAddAttempts.remove(productKey)
             
-            val displayName = buildString {
-                append(productInfo.name)
-                if (!productInfo.unit.isNullOrBlank()) {
-                    append(" (").append(productInfo.unit).append(")")
-                }
-            }
-            
-            // تحويل الرموز لتجنب أخطاء تليجرام عند استخدام وضع HTML
-            val safeDisplayName = displayName.toString().replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            // تحويل الرموز لاسم المنتج الأساسي فقط لتجنب أخطاء تليجرام عند استخدام وضع HTML
+            val safeName = productInfo.name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+            // بناء النص النهائي بحيث يقتصر الـ Monospace على الاسم فقط
             val dealText = buildString {
-                append("<code>").append(safeDisplayName).append("</code>")
+                append("<code>").append(safeName).append("</code>") // اسم المنتج كـ Monospace
+                
+                if (!productInfo.unit.isNullOrBlank()) {
+                    append(" (").append(productInfo.unit).append(")") // الوحدة بخط عادي خارج الكود
+                }
                 if (!productInfo.salePrice.isNullOrBlank()) {
                     append(" ب ").append(productInfo.salePrice).append(" جنيه")
                 }
