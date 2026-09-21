@@ -864,9 +864,9 @@ private fun openCartAndSendReport(
 
                 val captionPrefix =
                     if (sentProducts.isEmpty()) {
-                        "عروض Rabbit 🐰\n\n"
+                        "عروض ممتازة علي ابلكيشن رابيت\n\n"
                     } else {
-                        "وعروض Rabbit إضافية 🐰\n\n"
+                        "ودي كمان\n\n"
                     }
 
                 val caption = (
@@ -884,7 +884,7 @@ private fun openCartAndSendReport(
                             (bitmap.height * 0.10f).toInt()
 
                         val bottomCrop =
-                            (bitmap.height * 0.08f).toInt()
+                            (bitmap.height * 0.20f).toInt()
 
                         val cropHeight =
                             bitmap.height -
@@ -1549,8 +1549,37 @@ private fun sendBreadfastCartReport(
     // منطق تطبيق رابيت (Rabbit Automation)
     // ==========================================
     private fun runRabbitAutomation(prefs: SharedPreferences) {
-        addLog("⏳ تم فتح رابيت.. ننتظر 35 ثانية للتحميل...")
-        Thread.sleep(35000)
+        addLog("⏳ تم فتح رابيت.. ننتظر 20 ثانية لاحتمال ظهور إعلان...")
+        Thread.sleep(20000)
+
+        // محاولة البحث عن زر إغلاق الإعلان (X) وإغلاقه
+        var adClosed = false
+        fun scanForClose(node: AccessibilityNodeInfo?) {
+            if (node == null || adClosed) return
+            val text = (node.text?.toString() ?: "").trim()
+            val desc = (node.contentDescription?.toString() ?: "").trim()
+            if (text.equals("x", ignoreCase = true) || text.equals("✕") || desc.contains("close", ignoreCase = true) || desc.contains("إغلاق", ignoreCase = true)) {
+                if (clickNodeSafely(node) || (node.parent != null && clickNodeSafely(node.parent!!))) {
+                    adClosed = true
+                } else {
+                    clickNodeCenter(node)
+                    adClosed = true
+                }
+                return
+            }
+            for (i in 0 until node.childCount) {
+                scanForClose(node.getChild(i))
+            }
+        }
+        scanForClose(rootInActiveWindow)
+
+        if (adClosed) {
+            addLog("✅ تم إغلاق البانر الإعلاني بنجاح.")
+            Thread.sleep(3000)
+        }
+
+        addLog("⏳ ننتظر 10 ثانية إضافية لتحميل الصفحة الرئيسية...")
+        Thread.sleep(10000)
 
         val supermarketNode = findNodeByText(rootInActiveWindow, "Supermarket+") ?: findNodeByText(rootInActiveWindow, "+سوبرماركت")
         if (supermarketNode != null) {
@@ -1633,7 +1662,6 @@ private fun sendBreadfastCartReport(
             if (productAdded) {
                 noAddPasses = 0
                 addLog("🔄 Rabbit: تمت الإضافة، ننتظر استقرار الشاشة...")
-                // تمت زيادة وقت الانتظار هنا لـ 2.5 ثانية لضمان انتهاء حركة شريط (Recommended for you) تماماً
                 Thread.sleep(2500)
                 continue
             }
@@ -1658,137 +1686,32 @@ private fun sendBreadfastCartReport(
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
-    addLog(
-        "🛒 Rabbit: تم العثور على " +
-            "${foundDeals.size} عروض، جاري فتح السلة."
-    )
+            addLog("🛒 Rabbit: تم العثور على ${foundDeals.size} عروض، جاري فتح السلة.")
 
-    if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
-        addLog(
-            "❌ Rabbit: فشل الانتقال إلى السلة النهائية."
-        )
-        return
-    }
-
-    val finalCartOpened = waitForAnyText(
-        "My Cart",
-        "الكيس",
-        "Clear all",
-        "فضي الكيس",
-        "Deserted cart?",
-        "إيه الصحراء دي؟",
-        timeoutMs = 10000L
-    )
-
-    if (!finalCartOpened) {
-        addLog(
-            "❌ Rabbit: السلة لم تفتح خلال 10 ثوانٍ."
-        )
-        return
-    }
-
-    Thread.sleep(4500)
-
-    if (Build.VERSION.SDK_INT >= 30) {
-        openCartAndSendReport(
-            token = token,
-            chatId = chatId,
-            deals = foundDeals,
-            isCartAlreadyOpen = true,
-            appType = "RABBIT"
-        )
-    } else {
-        sendChunksAsText(
-            token,
-            chatId,
-            foundDeals
-                .map { it.dealText }
-                .chunked(5),
-            appType = "RABBIT"
-        )
-    }
-} else {
-    addLog(
-        "📉 Rabbit: لم يتم العثور على عروض."
-    )
-}
-    }
-    
-    private fun analyzeRabbitDeals(
-        nodesList: List<NodeData>, minDiscount: Int, deals: MutableList<DealData>, 
-        processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
-        cooldownMillis: Long, prefs: SharedPreferences
-    ): Boolean {
-        val processedCards = mutableSetOf<String>()
-        
-        for (current in nodesList) {
-            val badgeText = current.text.trim()
-            val discountMatch = Regex("""[-]?\s*(\d{1,2})\s*[%٪]-?""").find(badgeText) ?: continue
-            val discountPercent = discountMatch.groupValues[1].toIntOrNull() ?: continue
-            if (discountPercent < minDiscount) continue
-            
-            val productCard = findRabbitProductCard(current.node)
-            if (productCard == null) continue
-            
-            val cardRect = getRect(productCard)
-            val cardKey = "${cardRect.left}:${cardRect.top}:${cardRect.right}:${cardRect.bottom}"
-            if (!processedCards.add(cardKey)) continue
-            
-            val productInfo = extractRabbitProductInfo(productCard)
-            if (productInfo == null || productInfo.name.length < 3) continue
-            
-            val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
-            
-            // التعديل: تم نقل اللوج بعد هذه السطور حتى لا يتم تسجيل المنتج إلا إذا كان جديداً ولم يتم تسجيله من قبل
-            if (processed.contains(productKey)) continue
-            val lastSent = historyMap[productKey]
-            if (lastSent != null && System.currentTimeMillis() - lastSent < cooldownMillis) continue
-            
-            val attempts = rabbitAddAttempts[productKey] ?: 0
-            if (attempts >= 3) continue
-
-            // مكان اللوج الصحيح: يظهر مرة واحدة فقط لكل منتج جديد يكتشفه البوت
-            addLog("🔎 يحقق شرط الخصم ($discountPercent%): ${productInfo.name} - السعر: ${productInfo.salePrice ?: "غير متاح"}")
-
-            var plusClicked = false
-            
-            val addButton = findRabbitAddButton(productCard)
-            if (addButton != null) {
-                plusClicked = clickNodeCenter(addButton)
+            if (!tapRabbitBottomTab(RabbitBottomTab.CART)) {
+                addLog("❌ Rabbit: فشل الانتقال إلى السلة النهائية.")
+                return
             }
 
-            if (!plusClicked) {
-                rabbitAddAttempts[productKey] = attempts + 1
-                addLog("⚠️ Rabbit: تعذر النقر الآمن لـ ${productInfo.name} (محاولة ${attempts + 1}/3)")
-                continue
+            val finalCartOpened = waitForAnyText(
+                "My Cart", "الكيس", "Clear all", "فضي الكيس", "Deserted cart?", "إيه الصحراء دي؟", timeoutMs = 10000L
+            )
+
+            if (!finalCartOpened) {
+                addLog("❌ Rabbit: السلة لم تفتح خلال 10 ثوانٍ.")
+                return
             }
-            
-            rabbitAddAttempts.remove(productKey)
-            
-            val displayName = buildString {
-                append(productInfo.name)
-                if (!productInfo.unit.isNullOrBlank()) {
-                    append(" (").append(productInfo.unit).append(")")
-                }
+
+            Thread.sleep(4500)
+
+            if (Build.VERSION.SDK_INT >= 30) {
+                openCartAndSendReport(token, chatId, deals = foundDeals, isCartAlreadyOpen = true, appType = "RABBIT")
+            } else {
+                sendChunksAsText(token, chatId, foundDeals.map { it.dealText }.chunked(5), appType = "RABBIT")
             }
-            
-            val dealText = buildString {
-                append(displayName)
-                if (!productInfo.salePrice.isNullOrBlank()) {
-                    append(" ب ").append(productInfo.salePrice).append(" جنيه")
-                }
-                append(" بخصم ").append(discountPercent).append("%")
-            }
-            
-            deals.add(DealData(originalName = productInfo.name, dealText = dealText))
-            processed.add(productKey)
-            historyMap[productKey] = System.currentTimeMillis()
-            saveHistoryMap(prefs, historyMap)
-            addLog("✅ Rabbit: تمت إضافة عرض: $dealText")
-            
-            return true 
+        } else {
+            addLog("📉 Rabbit: لم يتم العثور على عروض.")
         }
-        return false
     }
 
     
@@ -2141,9 +2064,9 @@ private fun sendBreadfastCartReport(
     for (i in chunks.indices) {
         val prefix = if (appType == "RABBIT") {
             if (i == 0) {
-                "عروض ممتازة على Rabbit 🐰\n\n"
+                "عروض ممتازة علي ابلكيشن رابيت\n\n"
             } else {
-                "وعروض Rabbit إضافية 🐰\n\n"
+                "ودول كمان\n\n"
             }
         } else {
             if (i == 0) {
