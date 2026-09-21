@@ -195,13 +195,8 @@ private fun calculateDiscount(
     
 
     private fun formatPrice(value: Double): String {
-        return if (value % 1.0 == 0.0) {
-            value.toInt().toString()
-        } else {
-            String.format(java.util.Locale.US, "%.2f", value)
-                .trimEnd('0')
-                .trimEnd('.')
-        }
+        // التعديل: إرجاع السعر كعدد صحيح دائماً لإلغاء القروش والكسور تماماً
+        return value.toInt().toString()
     }
 
 
@@ -1469,7 +1464,9 @@ private fun normalizeRabbitText(text: String): String {
         // تصفية الأرقام الصغيرة جداً (لتفادي الكميات)، واختيار السعر الأقل
         val validPrices = combinedPrices.filter { it > 2.0 }
         val minPrice = validPrices.minOrNull()
-        return minPrice?.toString()?.removeSuffix(".0")
+        
+        // التعديل: تحويل السعر إلى عدد صحيح (Int) لإلغاء القروش والكسور تماماً
+        return minPrice?.toInt()?.toString()
     }
 
     private fun extractRabbitProductInfo(cardNode: AccessibilityNodeInfo): RabbitProductInfo? {
