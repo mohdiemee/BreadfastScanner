@@ -67,6 +67,14 @@ private data class RabbitCartProduct(
     }
 }
 
+
+private data class BreadfastCartProduct(
+    val name: String,
+    val price: String,
+    val topY: Int,
+    val bottomY: Int
+)
+
 class DealScannerService : AccessibilityService() {
 
     private var isScanning = false
@@ -153,7 +161,55 @@ class DealScannerService : AccessibilityService() {
     )
 }
 
+private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartProduct> {
+        val nodes = cartVisibleNodes()
+        val products = mutableListOf<BreadfastCartProduct>()
 
+        // تجاهل قسم "يعجب الناس ايضا" وما تحته تماماً
+        val recommendedNode = nodes.find { it.text.contains("يعجب الناس", ignoreCase = true) }
+        val limitY = recommendedNode?.node?.let { getRect(it).top } ?: Int.MAX_VALUE
+
+        val validNodes = nodes.filter { getRect(it.node).bottom < limitY }
+
+        // البحث عن عقد النصوص التي تحتوي على العملة "ج.م"
+        val priceNodes = validNodes.filter { it.text.contains("ج.م") && !it.text.contains("باقي") }
+
+        for (priceNode in priceNodes) {
+            val pRect = getRect(priceNode.node)
+            
+            // البحث عن اسم المنتج وهو عادة عقدة نصية فوق السعر أو بجانبه
+            val nameNode = validNodes.filter {
+                val nRect = getRect(it.node)
+                nRect.bottom <= pRect.bottom + 40 && 
+                nRect.top >= pRect.top - 300 && 
+                !it.text.contains("ج.م") &&
+                !it.text.matches(Regex("""\d+""")) && 
+                it.text.length > 4 &&
+                !it.text.contains("السلة") &&
+                !it.text.contains("نقطة") &&
+                !it.text.contains("مسح الكل")
+            }.minByOrNull { Math.abs(getRect(it.node).bottom - pRect.top) }
+
+            if (nameNode != null) {
+                val name = normalizeRabbitText(nameNode.text) 
+                
+                // استخراج السعر وتحويله لعدد صحيح لقطع القروش تماماً
+                val priceStr = priceNode.text.replace(Regex("""[^\d.,]"""), "").replace(",", ".")
+                    .toDoubleOrNull()?.toInt()?.toString() ?: priceNode.text.replace(Regex("""[^\d]"""), "")
+                
+                products.add(
+                    BreadfastCartProduct(
+                        name = name,
+                        price = priceStr,
+                        topY = Math.min(getRect(nameNode.node).top, pRect.top),
+                        bottomY = Math.max(getRect(nameNode.node).bottom, pRect.bottom)
+                    )
+                )
+            }
+        }
+        
+        return products.distinctBy { it.name }.sortedBy { it.topY }
+    }
 
 private fun calculateDiscount(
     oldPrice: Double?,
@@ -1077,15 +1133,10 @@ private fun sendBreadfastCartReport(
     var loopCount = 0
     var lastSignature = ""
     var unchangedScreens = 0
+    val maxLoops = 30
+    val sentProducts = mutableSetOf<String>()
 
-    deals.forEach {
-        it.isAssigned = false
-    }
-
-    while (
-        deals.any { !it.isAssigned } &&
-            loopCount < 30
-    ) {
+    while (loopCount < maxLoops) {
         loopCount++
 
         val visibleNodes = cartVisibleNodes()
@@ -1099,10 +1150,14 @@ private fun sendBreadfastCartReport(
 
         if (signature.isBlank()) {
             addLog("⚠️ Breadfast: الشاشة فارغة.")
-            break
+            if (loopCount >= 3) break
+            Thread.sleep(1500)
+            continue
         }
 
-        if (signature == lastSignature) {
+        val screenChanged = signature != lastSignature || loopCount == 1
+
+        if (!screenChanged) {
             unchangedScreens++
 
             addLog(
@@ -1120,221 +1175,180 @@ private fun sendBreadfastCartReport(
             unchangedScreens = 0
         }
 
-        val currentBatch = deals
-            .asSequence()
-            .filter { !it.isAssigned }
-            .mapNotNull {
-                findDealPositionInCart(
-                    it,
-                    visibleNodes
-                )
-            }
-            .sortedBy { it.top }
-            .take(5)
-            .map { it.deal }
-            .toList()
-
-        if (currentBatch.isEmpty()) {
-            addLog(
-                "⚠️ Breadfast: لم يتم العثور على دفعة."
-            )
-
-            lastSignature = signature
-
-            val moved = try {
-                moveCartAndWait(signature)
+        if (screenChanged) {
+            val allProducts = try {
+                parseBreadfastCartProductsFromAccessibility()
             } catch (e: Exception) {
                 addLog(
-                    "❌ Breadfast: خطأ أثناء التمرير: " +
+                    "❌ خطأ Breadfast Accessibility parser: " +
                         "${e.javaClass.simpleName}: " +
-                        "${e.message}"
+                        e.message
                 )
-                false
+                emptyList()
             }
 
-            if (!moved) {
+            val batch = allProducts.filter { product ->
+                val key = "${normalizeProductKey(product.name)}|${product.price}"
+                !sentProducts.contains(key)
+            }.sortedBy { it.topY }.take(5)
+
+            if (batch.isEmpty()) {
                 addLog(
-                    "🏁 Breadfast: تعذر تحريك السلة."
+                    "⚠️ Breadfast: لم يتم العثور على دفعة صالحة."
                 )
-                break
-            }
-
-            continue
-        }
-
-        val caption = (
-            if (loopCount == 1) {
-                "عروض ممتازة\n\n"
             } else {
-                "ودول كمان\n\n"
-            } +
-                currentBatch.joinToString("\n\n") {
-                    it.dealText
-                }
-            ).take(1020)
-
-        addLog(
-            "📷 Breadfast: التقاط Screenshot للدفعة " +
-                "${currentBatch.size}..."
-        )
-
-        val bitmap = takeScreenshotSync()
-
-        var imageBytes: ByteArray? = null
-
-        if (bitmap != null) {
-            try {
                 addLog(
-                    "📐 Breadfast Screenshot: " +
-                        "${bitmap.width}x${bitmap.height}"
+                    "📷 Breadfast: التقاط Screenshot للدفعة " +
+                        "${batch.size}..."
                 )
 
-                val topCrop =
-                    (bitmap.height * 0.10f).toInt()
+                val captionPrefix = if (sentProducts.isEmpty()) {
+                    "عروض ممتازة\n\n"
+                } else {
+                    "ودول كمان\n\n"
+                }
 
-                val bottomCrop =
-                    (bitmap.height * 0.08f).toInt()
+                val caption = (
+                    captionPrefix +
+                        batch.joinToString("\n\n") { product ->
+                            // البحث عن المنتج في العروض الأصلية لجلب نسبة الخصم
+                            val matchedDeal = deals.find { deal ->
+                                val dealWords = normalizeForCartMatch(deal.originalName).split(Regex("\\s+")).filter { it.length > 2 }
+                                val productWords = normalizeForCartMatch(product.name).split(Regex("\\s+")).filter { it.length > 2 }
+                                dealWords.intersect(productWords.toSet()).size >= 2
+                            }
+                            
+                            val discountPart = if (matchedDeal != null) {
+                                val discountMatch = Regex("""بخصم (\d+)%""").find(matchedDeal.dealText)
+                                if (discountMatch != null) " بخصم ${discountMatch.groupValues[1]}%" else ""
+                            } else ""
 
-                val cropHeight =
-                    bitmap.height -
-                        topCrop -
-                        bottomCrop
+                            // فصل اسم المنتج عن الوحدة لعمل تنسيق Monospace على الاسم فقط
+                            val lastOpenParen = product.name.lastIndexOf("(")
+                            val lastCloseParen = product.name.lastIndexOf(")")
+                            
+                            val baseName: String
+                            val unitStr: String
+                            
+                            if (lastOpenParen != -1 && lastCloseParen != -1 && lastCloseParen > lastOpenParen) {
+                                baseName = product.name.substring(0, lastOpenParen).trim()
+                                unitStr = " " + product.name.substring(lastOpenParen, lastCloseParen + 1)
+                            } else {
+                                baseName = product.name
+                                unitStr = ""
+                            }
+                            
+                            val safeName = baseName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                            
+                            "<code>$safeName</code>$unitStr ب ${product.price} جنيه$discountPart"
+                        }
+                    ).take(1020)
 
-                if (
-                    bitmap.width > 100 &&
-                        cropHeight > 100
-                ) {
-                    val croppedBitmap =
-                        Bitmap.createBitmap(
-                            bitmap,
-                            0,
-                            topCrop,
-                            bitmap.width,
-                            cropHeight
+                val bitmap = takeScreenshotSync()
+                var imageBytes: ByteArray? = null
+
+                if (bitmap != null) {
+                    try {
+                        addLog(
+                            "📐 Breadfast Screenshot: " +
+                                "${bitmap.width}x${bitmap.height}"
                         )
 
-                    val stream =
-                        ByteArrayOutputStream()
+                        // التعديل: قص أعلى 18% (لإزالة السلة والنقاط) وأسفل 22% (لإزالة زر الدفع والتوصيل)
+                        val topCrop = (bitmap.height * 0.18f).toInt()
+                        val bottomCrop = (bitmap.height * 0.22f).toInt()
+                        val cropHeight = bitmap.height - topCrop - bottomCrop
 
-                    croppedBitmap.compress(
-                        Bitmap.CompressFormat.JPEG,
-                        85,
-                        stream
-                    )
+                        if (bitmap.width > 100 && cropHeight > 100) {
+                            val croppedBitmap = Bitmap.createBitmap(
+                                bitmap, 0, topCrop, bitmap.width, cropHeight
+                            )
 
-                    imageBytes =
-                        stream.toByteArray()
+                            val stream = ByteArrayOutputStream()
+                            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
+                            imageBytes = stream.toByteArray()
+                            croppedBitmap.recycle()
 
-                    croppedBitmap.recycle()
-
-                    addLog(
-                        "🖼️ Breadfast: تم تجهيز الصورة: " +
-                            "${imageBytes.size} bytes"
-                    )
+                            addLog(
+                                "🖼️ Breadfast: تم تجهيز الصورة: " +
+                                    "${imageBytes.size} bytes"
+                            )
+                        } else {
+                            addLog("⚠️ Breadfast: أبعاد القص غير صالحة.")
+                        }
+                    } catch (e: Exception) {
+                        addLog(
+                            "❌ Breadfast image error: " +
+                                "${e.javaClass.simpleName}: " +
+                                "${e.message}"
+                        )
+                    } finally {
+                        if (!bitmap.isRecycled) {
+                            bitmap.recycle()
+                        }
+                    }
                 } else {
+                    addLog("⚠️ Breadfast: Screenshot رجع null.")
+                }
+
+                val sent = try {
+                    if (imageBytes != null && imageBytes.isNotEmpty()) {
+                        addLog("📤 Breadfast: إرسال صورة Telegram...")
+                        sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+                    } else {
+                        addLog("📤 Breadfast: إرسال النص كبديل...")
+                        sendTelegramMessage(token, chatId, caption)
+                    }
+                } catch (e: Exception) {
                     addLog(
-                        "⚠️ Breadfast: أبعاد القص غير صالحة."
+                        "❌ Breadfast Telegram error: " +
+                            "${e.javaClass.simpleName}: " +
+                            "${e.message}"
                     )
+                    false
                 }
-            } catch (e: Exception) {
+
+                if (!sent) {
+                    addLog("❌ Breadfast: فشل إرسال الدفعة.")
+                    break
+                }
+
+                batch.forEach { product ->
+                    val key = "${normalizeProductKey(product.name)}|${product.price}"
+                    sentProducts.add(key)
+                }
+
                 addLog(
-                    "❌ Breadfast image error: " +
-                        "${e.javaClass.simpleName}: " +
-                        "${e.message}"
+                    "✅ Breadfast: تم إرسال الدفعة: " +
+                        "${batch.size} منتجات."
                 )
-            } finally {
-                if (!bitmap.isRecycled) {
-                    bitmap.recycle()
-                }
             }
-        } else {
-            addLog(
-                "⚠️ Breadfast: Screenshot رجع null."
-            )
         }
 
-        val sent = try {
-            if (
-                imageBytes != null &&
-                    imageBytes.isNotEmpty()
-            ) {
-                addLog(
-                    "📤 Breadfast: إرسال صورة Telegram..."
-                )
+        lastSignature = signature
 
-                sendTelegramPhotoMultipart(
-                    token = token,
-                    chatId = chatId,
-                    imageBytes = imageBytes,
-                    caption = caption
-                )
-            } else {
-                addLog(
-                    "📤 Breadfast: إرسال النص كبديل..."
-                )
-
-                sendTelegramMessage(
-                    token = token,
-                    chatId = chatId,
-                    text = caption
-                )
-            }
+        val moved = try {
+            moveCartAndWait(signature)
         } catch (e: Exception) {
             addLog(
-                "❌ Breadfast Telegram error: " +
+                "❌ Breadfast: خطأ أثناء التمرير: " +
                     "${e.javaClass.simpleName}: " +
                     "${e.message}"
             )
             false
         }
 
-        if (!sent) {
-            addLog(
-                "❌ Breadfast: فشل إرسال الدفعة."
-            )
+        if (!moved) {
+            addLog("🏁 Breadfast: تعذر تحريك السلة.")
             break
         }
 
-        currentBatch.forEach {
-            it.isAssigned = true
-        }
-
-        addLog(
-            "✅ Breadfast: تم إرسال الدفعة: " +
-                "${currentBatch.size} منتجات."
-        )
-
-        lastSignature = signature
-
-        if (deals.any { !it.isAssigned }) {
-            val moved = try {
-                moveCartAndWait(signature)
-            } catch (e: Exception) {
-                addLog(
-                    "❌ Breadfast: خطأ أثناء التمرير: " +
-                        "${e.javaClass.simpleName}: " +
-                        "${e.message}"
-                )
-                false
-            }
-
-            if (!moved) {
-                addLog(
-                    "🏁 Breadfast: تعذر تحريك السلة."
-                )
-                break
-            }
-
-            Thread.sleep(1200)
-        }
+        Thread.sleep(1200)
     }
-
-    val assignedCount =
-        deals.count { it.isAssigned }
 
     addLog(
         "📊 نتيجة تقرير Breadfast: " +
-            "$assignedCount/${deals.size} منتجات."
+            "${sentProducts.size} منتجات."
     )
 }
 
