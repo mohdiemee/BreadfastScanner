@@ -82,7 +82,7 @@ class DealScannerService : AccessibilityService() {
     private var addedItemsCount = 0
     private val rabbitAddAttempts = mutableMapOf<String, Int>()
 
-    private var breadfastScreenshotIndex = 0
+    
     private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
 
     private fun addLog(message: String) {
@@ -167,11 +167,8 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
     val products = mutableListOf<BreadfastCartProduct>()
 
     val recommendedNode = nodes.find {
-        val text = normalizeBreadfastText(it.text)
-
-        text.contains("يعجب", ignoreCase = true) ||
-            text.contains("الناس", ignoreCase = true) ||
-            text.equals("ودول كمان", ignoreCase = true)
+        it.text.contains("يعجب", ignoreCase = true) ||
+            it.text.contains("الناس", ignoreCase = true)
     }
 
     val limitY = recommendedNode
@@ -186,8 +183,7 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
     val priceNodes = validNodes.filter {
         val text = normalizeBreadfastText(it.text)
 
-        text.contains("ج.م", ignoreCase = true) &&
-            !isInvalidBreadfastCartText(text) &&
+        text.contains("ج.م") &&
             !text.contains("باقي", ignoreCase = true) &&
             !text.contains("رسوم", ignoreCase = true) &&
             !text.contains("متابعة", ignoreCase = true)
@@ -195,11 +191,6 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
 
     for (priceNode in priceNodes) {
         val priceRect = getRect(priceNode.node)
-        val rawPriceText = normalizeBreadfastText(priceNode.text)
-
-        if (isInvalidBreadfastCartText(rawPriceText)) {
-            continue
-        }
 
         val nameCandidates = validNodes.filter {
             val nameRect = getRect(it.node)
@@ -208,35 +199,41 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
             nameRect.bottom <= priceRect.bottom + 60 &&
                 nameRect.top >= priceRect.top - 350 &&
                 text.length > 3 &&
-                text.any { char -> char.isLetter() } &&
                 !text.contains("ج.م", ignoreCase = true) &&
                 !text.matches(Regex("""\d+""")) &&
-                !isInvalidBreadfastCartText(text)
+                !text.contains("السلة", ignoreCase = true) &&
+                !text.contains("نقطة", ignoreCase = true) &&
+                !text.contains("مسح الكل", ignoreCase = true) &&
+                !text.contains("product_", ignoreCase = true) &&
+                !text.contains("_image", ignoreCase = true) &&
+                !text.contains("cartitem_", ignoreCase = true) &&
+                !text.contains("cart_item", ignoreCase = true) &&
+                !text.contains("cart item", ignoreCase = true) &&
+                !isInvalidBreadfastProductName(text)
         }
 
         val nameNode = nameCandidates.minByOrNull {
-            kotlin.math.abs(
-                getRect(it.node).bottom - priceRect.top
-            )
+            kotlin.math.abs(getRect(it.node).bottom - priceRect.top)
         }
 
         if (nameNode == null) {
             addLog(
                 "⚠️ Breadfast: لم يتم العثور على اسم صالح للسعر: " +
-                    rawPriceText
+                    priceNode.text
             )
             continue
         }
 
         val name = normalizeBreadfastText(nameNode.text)
 
-        if (isInvalidBreadfastCartText(name)) {
+        if (isInvalidBreadfastProductName(name)) {
             addLog(
-                "⚠️ Breadfast: تم تجاهل اسم غير صالح: $name"
+                "⚠️ Breadfast: تم تجاهل اسم برمجي: $name"
             )
             continue
         }
 
+        val rawPriceText = normalizeBreadfastText(priceNode.text)
         val price = normalizeBreadfastPrice(rawPriceText)
 
         if (price == null) {
@@ -265,7 +262,7 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
 
     return products
         .filterNot {
-            isInvalidBreadfastCartText(it.name)
+            isInvalidBreadfastProductName(it.name)
         }
         .distinctBy {
             normalizeProductKey(it.name)
@@ -288,80 +285,6 @@ private fun normalizeBreadfastText(text: String): String {
         .replace(Regex("""\s+"""), " ")
         .trim()
 }
-
-
-private fun isInvalidBreadfastCartText(text: String): Boolean {
-    val normalized = normalizeBreadfastText(text)
-        .lowercase(java.util.Locale.ROOT)
-        .trim()
-
-    if (normalized.isBlank()) {
-        return true
-    }
-
-    val invalidExactTexts = setOf(
-        "ودول كمان",
-        "عروض ممتازة",
-        "أكسب حتي",
-        "اكسب حتي",
-        "delivery fees info",
-        "delivery fee",
-        "delivery fees",
-        "رسوم التوصيل",
-        "رسوم توصيل",
-        "التوصيل",
-        "الشحن",
-        "المجموع",
-        "الإجمالي",
-        "subtotal",
-        "total",
-        "checkout",
-        "متابعة الدفع",
-        "متابعة",
-        "الدفع",
-        "مسح الكل",
-        "clear all",
-        "clear"
-    )
-
-    if (normalized in invalidExactTexts) {
-        return true
-    }
-
-    val invalidParts = listOf(
-        "delivery_fees_info",
-        "delivery fee",
-        "delivery fees",
-        "أكسب حتي",
-        "اكسب حتي",
-        "رسوم التوصيل",
-        "رسوم توصيل",
-        "subtotal",
-        "grand total",
-        "total amount",
-        "checkout",
-        "cartitem_",
-        "cart_item",
-        "cart item",
-        "product_",
-        "_image"
-    )
-
-    if (invalidParts.any { normalized.contains(it) }) {
-        return true
-    }
-
-    if (
-        normalized.matches(
-            Regex("""(?:delivery|رسوم|fee|fees)[_\s-]*(?:fees?|التوصيل|توصيل|info)?""")
-        )
-    ) {
-        return true
-    }
-
-    return false
-}
-
 
 private fun isInvalidBreadfastProductName(text: String): Boolean {
     val normalized = normalizeBreadfastText(text)
@@ -1351,8 +1274,6 @@ private fun sendBreadfastCartReport(
     chatId: String,
     deals: List<DealData>
 ) {
-    breadfastScreenshotIndex = 0
-
     var loopCount = 0
     var lastSignature = ""
     var unchangedScreens = 0
@@ -1410,17 +1331,14 @@ private fun sendBreadfastCartReport(
             } catch (e: Exception) {
                 addLog(
                     "❌ خطأ Breadfast Accessibility parser: " +
-                        "${e.javaClass.simpleName}: " +
-                        e.message
+                        "${e.javaClass.simpleName}: ${e.message}"
                 )
                 emptyList()
             }
 
             val batch = allProducts
                 .filter { product ->
-                    val cleanName =
-                        normalizeBreadfastText(product.name)
-
+                    val cleanName = normalizeBreadfastText(product.name)
                     val cleanPrice =
                         normalizeBreadfastPrice(product.price)
                             ?: product.price
@@ -1477,9 +1395,7 @@ private fun sendBreadfastCartReport(
                                             }
 
                                     dealWords
-                                        .intersect(
-                                            productWords.toSet()
-                                        )
+                                        .intersect(productWords.toSet())
                                         .size >= 2
                                 }
 
@@ -1542,18 +1458,11 @@ private fun sendBreadfastCartReport(
                                 "${bitmap.width}x${bitmap.height}"
                         )
 
-                        val topCrop: Int
+                        val topCrop =
+                            (bitmap.height * 0.18f).toInt()
 
                         val bottomCrop =
                             (bitmap.height * 0.22f).toInt()
-
-                        if (breadfastScreenshotIndex == 0) {
-                            topCrop =
-                                (bitmap.height * 0.18f).toInt()
-                        } else {
-                            topCrop =
-                                (bitmap.height * 0.34f).toInt()
-                        }
 
                         val cropHeight =
                             bitmap.height -
@@ -1584,8 +1493,6 @@ private fun sendBreadfastCartReport(
 
                             imageBytes =
                                 stream.toByteArray()
-
-                            breadfastScreenshotIndex++
 
                             croppedBitmap.recycle()
 
@@ -1706,7 +1613,6 @@ private fun sendBreadfastCartReport(
             "${sentProducts.size} منتجات."
     )
 }
-
 
     private fun isRabbitInArabic(): Boolean {
         val root = rootInActiveWindow ?: return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
@@ -2504,10 +2410,7 @@ private fun normalizeRabbitText(text: String): String {
         metrics.heightPixels * 0.94f
     )
 
-    addLog(
-        "📱 cartVisibleNodes: تم العثور على " +
-            "${nodes.size} عنصرًا"
-    )
+    addLog("📱 cartVisibleNodes: تم العثور على ${nodes.size} عنصرًا")
 
     return nodes
 }
@@ -2527,69 +2430,19 @@ private fun normalizeRabbitText(text: String): String {
 }
 
     private fun moveCartAndWait(previousSignature: String): Boolean {
-    val metrics = resources.displayMetrics
+        // يبدأ السحب في قائمة المنتجات وليس فوق بانر التوصيل السفلي.
+        swipeUp(0.72f, 0.30f, 1100L)
 
-    val startX = metrics.widthPixels * 0.50f
-    val startY = metrics.heightPixels * 0.68f
-    val endY = metrics.heightPixels * 0.20f
+        repeat(10) {
+            Thread.sleep(250)
+            val newSignature = cartScreenSignature(cartVisibleNodes())
+            if (newSignature.isNotBlank() && newSignature != previousSignature) {
+                return true
+            }
+        }
 
-    addLog(
-        "↕️ Breadfast: بدء تمرير منطقة المنتجات " +
-            "from=${startY.toInt()} " +
-            "to=${endY.toInt()}"
-    )
-
-    val path = Path().apply {
-        moveTo(startX, startY)
-        lineTo(startX, endY)
-    }
-
-    val dispatched = dispatchGesture(
-        GestureDescription.Builder()
-            .addStroke(
-                GestureDescription.StrokeDescription(
-                    path,
-                    0L,
-                    1100L
-                )
-            )
-            .build(),
-        null,
-        null
-    )
-
-    if (!dispatched) {
-        addLog(
-            "❌ Breadfast: فشل تنفيذ تمرير السلة."
-        )
         return false
     }
-
-    Thread.sleep(1800)
-
-    repeat(15) {
-        Thread.sleep(300)
-
-        val newSignature =
-            cartScreenSignature(cartVisibleNodes())
-
-        if (
-            newSignature.isNotBlank() &&
-            newSignature != previousSignature
-        ) {
-            addLog(
-                "✅ Breadfast: تم تحريك السلة وظهرت عناصر جديدة."
-            )
-            return true
-        }
-    }
-
-    addLog(
-        "⚠️ Breadfast: تم تنفيذ Gesture لكن لم يتغير محتوى السلة."
-    )
-
-    return false
-}
 
 
     private fun sendChunksAsText(
