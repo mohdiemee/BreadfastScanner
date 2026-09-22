@@ -185,7 +185,10 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         text.contains("ج.م") &&
             !text.contains("باقي", ignoreCase = true) &&
             !text.contains("رسوم", ignoreCase = true) &&
-            !text.contains("متابعة", ignoreCase = true)
+            !text.contains("متابعة", ignoreCase = true) &&
+            !text.contains("خصم", ignoreCase = true) &&
+            !text.contains("التوصيل", ignoreCase = true) &&
+            !isInvalidBreadfastProductName(text)
     }
 
     for (priceNode in priceNodes) {
@@ -216,19 +219,14 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         }
 
         if (nameNode == null) {
-            addLog(
-                "⚠️ Breadfast: لم يتم العثور على اسم صالح للسعر: " +
-                    priceNode.text
-            )
+            addLog("⚠️ Breadfast: لم يتم العثور على اسم صالح للسعر: " + priceNode.text)
             continue
         }
 
         val name = normalizeBreadfastText(nameNode.text)
 
         if (isInvalidBreadfastProductName(name)) {
-            addLog(
-                "⚠️ Breadfast: تم تجاهل اسم برمجي: $name"
-            )
+            addLog("⚠️ Breadfast: تم تجاهل اسم برمجي: $name")
             continue
         }
 
@@ -236,10 +234,7 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         val price = normalizeBreadfastPrice(rawPriceText)
 
         if (price == null) {
-            addLog(
-                "⚠️ Breadfast: تعذر استخراج السعر من: " +
-                    rawPriceText
-            )
+            addLog("⚠️ Breadfast: تعذر استخراج السعر من: " + rawPriceText)
             continue
         }
 
@@ -247,28 +242,16 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
             BreadfastCartProduct(
                 name = name,
                 price = price,
-                topY = minOf(
-                    getRect(nameNode.node).top,
-                    priceRect.top
-                ),
-                bottomY = maxOf(
-                    getRect(nameNode.node).bottom,
-                    priceRect.bottom
-                )
+                topY = minOf(getRect(nameNode.node).top, priceRect.top),
+                bottomY = maxOf(getRect(nameNode.node).bottom, priceRect.bottom)
             )
         )
     }
 
     return products
-        .filterNot {
-            isInvalidBreadfastProductName(it.name)
-        }
-        .distinctBy {
-            normalizeProductKey(it.name)
-        }
-        .sortedBy {
-            it.topY
-        }
+        .filterNot { isInvalidBreadfastProductName(it.name) }
+        .distinctBy { normalizeProductKey(it.name) }
+        .sortedBy { it.topY }
 }
 
 private fun normalizeBreadfastText(text: String): String {
@@ -294,6 +277,17 @@ private fun isInvalidBreadfastProductName(text: String): Boolean {
         normalized.contains("cart item") ||
         normalized.contains("product_") ||
         normalized.contains("_image") ||
+        normalized.contains("delivery") ||
+        normalized.contains("fees") ||
+        normalized.contains("info") ||
+        normalized.contains("نقطة") ||
+        normalized.contains("أكسب") ||
+        normalized.contains("اكسب") ||
+        normalized.contains("استمتع") ||
+        normalized.contains("التوصيل") ||
+        normalized.contains("توصيل ببلاش") ||
+        normalized.contains("متابعة") ||
+        normalized.contains("الدفع") ||
         normalized.matches(Regex("""(?:cartitem|cart_item|product)[_\s-]?\d+"""))
 }
 
@@ -2405,8 +2399,8 @@ private fun normalizeRabbitText(text: String): String {
     extractNodes(
         rootInActiveWindow,
         nodes,
-        metrics.heightPixels * 0.10f,
-        metrics.heightPixels * 0.94f
+        metrics.heightPixels * 0.17f,   // كان 0.10f - تجاوز بانر "أكسب حتى X نقطة"
+        metrics.heightPixels * 0.83f    // كان 0.94f - استبعاد بانر خصم التوصيل وزر "متابعة إلى الدفع"
     )
 
     addLog("📱 cartVisibleNodes: تم العثور على ${nodes.size} عنصرًا")
@@ -2429,19 +2423,19 @@ private fun normalizeRabbitText(text: String): String {
 }
 
     private fun moveCartAndWait(previousSignature: String): Boolean {
-        // يبدأ السحب في قائمة المنتجات وليس فوق بانر التوصيل السفلي.
-        swipeUp(0.72f, 0.30f, 1100L)
+    // زيادة مسافة السحب لتفادي بقاء آخر منتج ظاهرًا جزئيًا في أعلى الشاشة التالية
+    swipeUp(0.80f, 0.16f, 1300L)
 
-        repeat(10) {
-            Thread.sleep(250)
-            val newSignature = cartScreenSignature(cartVisibleNodes())
-            if (newSignature.isNotBlank() && newSignature != previousSignature) {
-                return true
-            }
+    repeat(12) {
+        Thread.sleep(280)
+        val newSignature = cartScreenSignature(cartVisibleNodes())
+        if (newSignature.isNotBlank() && newSignature != previousSignature) {
+            return true
         }
-
-        return false
     }
+
+    return false
+}
 
 
     private fun sendChunksAsText(
