@@ -196,27 +196,19 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
                 !textLower.contains("السلة") &&
                 !textLower.contains("نقطة") &&
                 !textLower.contains("مسح الكل") &&
-                !textLower.contains("product_") && 
-                !textLower.contains("_image") &&
-                !textLower.contains("cartitem_") // التعديل: استبعاد الأسماء البرمجية الجديدة (cartItem)
+                !textLower.contains("product_") && // التعديل: تجاهل الأسماء البرمجية للصور
+                !textLower.contains("_image")
             }.minByOrNull { Math.abs(getRect(it.node).bottom - pRect.top) }
 
             if (nameNode != null) {
                 val name = normalizeRabbitText(nameNode.text) 
                 
-                // التعديل: تحويل الأرقام العربية إلى إنجليزية لضمان نجاح قراءة السعر
-                var rawPriceText = normalizeRabbitText(priceNode.text)
-                rawPriceText = rawPriceText
-                    .replace("٠", "0").replace("١", "1").replace("٢", "2")
-                    .replace("٣", "3").replace("٤", "4").replace("٥", "5")
-                    .replace("٦", "6").replace("٧", "7").replace("٨", "8")
-                    .replace("٩", "9")
-
+                // التعديل: تنظيف السعر من الرموز المخفية أولاً، ثم تحويله وإزالة القروش
+                val rawPriceText = normalizeRabbitText(priceNode.text)
                 val cleanPriceText = rawPriceText.replace(Regex("""[^\d.,]"""), "").replace(",", ".")
                 
-                // تحويل السعر لعدد صحيح لقطع القروش، مع خطة بديلة (Fallback) آمنة
                 val priceStr = cleanPriceText.toDoubleOrNull()?.toInt()?.toString() 
-                    ?: cleanPriceText.split(".")[0].replace(Regex("""[^\d]"""), "")
+                    ?: cleanPriceText.replace(Regex("""[^\d]"""), "")
                 
                 products.add(
                     BreadfastCartProduct(
@@ -231,6 +223,7 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         
         return products.distinctBy { it.name }.sortedBy { it.topY }
     }
+
 
 private fun calculateDiscount(
     oldPrice: Double?,
