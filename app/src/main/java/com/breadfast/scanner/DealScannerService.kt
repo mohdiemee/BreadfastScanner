@@ -170,18 +170,17 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
             it.text.contains("الناس", ignoreCase = true)
     }
 
-    val limitY = recommendedNode
-        ?.node
-        ?.let { getRect(it).top }
-        ?: Int.MAX_VALUE
+    val limitY = recommendedNode?.node?.let { getRect(it).top } ?: Int.MAX_VALUE
 
-    val validNodes = nodes.filter {
-        getRect(it.node).bottom < limitY
-    }
+    addLog(
+        "🧭 Breadfast Parser: recommendedNode=${recommendedNode?.text?.take(30) ?: "لا يوجد"} | limitY=$limitY"
+    )
+
+    val validNodes = nodes.filter { getRect(it.node).bottom < limitY }
+    addLog("🧭 Breadfast Parser: validNodes=${validNodes.size} من أصل ${nodes.size}")
 
     val priceNodes = validNodes.filter {
         val text = normalizeBreadfastText(it.text)
-
         text.contains("ج.م") &&
             !text.contains("باقي", ignoreCase = true) &&
             !text.contains("رسوم", ignoreCase = true) &&
@@ -189,6 +188,15 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
             !text.contains("خصم", ignoreCase = true) &&
             !text.contains("التوصيل", ignoreCase = true) &&
             !isInvalidBreadfastProductName(text)
+    }
+
+    addLog(
+        "🧭 Breadfast Parser: priceNodes=${priceNodes.size} -> " +
+            priceNodes.joinToString(" | ") { it.text.take(25) }
+    )
+
+    if (priceNodes.isEmpty()) {
+        addLog("❌ Breadfast Parser: لا توجد عقد أسعار صالحة إطلاقًا في هذه الشاشة.")
     }
 
     for (priceNode in priceNodes) {
@@ -219,7 +227,14 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         }
 
         if (nameNode == null) {
-            addLog("⚠️ Breadfast: لم يتم العثور على اسم صالح للسعر: " + priceNode.text)
+            addLog(
+                "⚠️ Breadfast: لم يتم العثور على اسم صالح للسعر: ${priceNode.text} " +
+                    "| priceRect=$priceRect | مرشحون قريبون=" +
+                    validNodes.filter {
+                        val r = getRect(it.node)
+                        r.top >= priceRect.top - 350 && r.bottom <= priceRect.bottom + 60
+                    }.joinToString(" || ") { "${it.text.take(25)}@y${getRect(it.node).top}" }
+            )
             continue
         }
 
@@ -234,9 +249,11 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         val price = normalizeBreadfastPrice(rawPriceText)
 
         if (price == null) {
-            addLog("⚠️ Breadfast: تعذر استخراج السعر من: " + rawPriceText)
+            addLog("⚠️ Breadfast: تعذر استخراج السعر من: $rawPriceText")
             continue
         }
+
+        addLog("✅ Breadfast Parser: ربط ناجح -> $name | $price ج.م")
 
         products.add(
             BreadfastCartProduct(
@@ -248,10 +265,14 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
         )
     }
 
-    return products
+    val finalList = products
         .filterNot { isInvalidBreadfastProductName(it.name) }
         .distinctBy { normalizeProductKey(it.name) }
         .sortedBy { it.topY }
+
+    addLog("📊 Breadfast Parser النتيجة النهائية: ${finalList.size} منتج من أصل ${products.size} قبل التصفية")
+
+    return finalList
 }
 
 private fun normalizeBreadfastText(text: String): String {
@@ -2395,15 +2416,25 @@ private fun normalizeRabbitText(text: String): String {
     private fun cartVisibleNodes(): MutableList<NodeData> {
     val nodes = mutableListOf<NodeData>()
     val metrics = resources.displayMetrics
+    val topBound = metrics.heightPixels * 0.12f
+    val bottomBound = metrics.heightPixels * 0.90f
 
-    extractNodes(
-        rootInActiveWindow,
-        nodes,
-        metrics.heightPixels * 0.17f,   // كان 0.10f - تجاوز بانر "أكسب حتى X نقطة"
-        metrics.heightPixels * 0.83f    // كان 0.94f - استبعاد بانر خصم التوصيل وزر "متابعة إلى الدفع"
+    extractNodes(rootInActiveWindow, nodes, topBound, bottomBound)
+
+    addLog(
+        "📱 cartVisibleNodes: ${nodes.size} عنصرًا | " +
+            "bounds=[${topBound.toInt()}..${bottomBound.toInt()}] | " +
+            "screenH=${metrics.heightPixels}"
     )
 
-    addLog("📱 cartVisibleNodes: تم العثور على ${nodes.size} عنصرًا")
+    if (nodes.isEmpty()) {
+        addLog("❌ cartVisibleNodes: القائمة فارغة تمامًا! rootInActiveWindow=${rootInActiveWindow != null}")
+    } else {
+        val sample = nodes.take(3).joinToString(" || ") { "${it.text.take(30)}@y${getRect(it.node).top}" }
+        val sampleEnd = nodes.takeLast(3).joinToString(" || ") { "${it.text.take(30)}@y${getRect(it.node).top}" }
+        addLog("🔎 أول 3 عناصر: $sample")
+        addLog("🔎 آخر 3 عناصر: $sampleEnd")
+    }
 
     return nodes
 }
@@ -2423,17 +2454,21 @@ private fun normalizeRabbitText(text: String): String {
 }
 
     private fun moveCartAndWait(previousSignature: String): Boolean {
-    // زيادة مسافة السحب لتفادي بقاء آخر منتج ظاهرًا جزئيًا في أعلى الشاشة التالية
-    swipeUp(0.80f, 0.16f, 1300L)
+    addLog("↕️ Breadfast: بدء سحب السلة | signatureLength قبل=${previousSignature.length}")
 
-    repeat(12) {
-        Thread.sleep(280)
+    swipeUp(0.78f, 0.20f, 1200L)
+
+    repeat(12) { attempt ->
+        Thread.sleep(250)
         val newSignature = cartScreenSignature(cartVisibleNodes())
+
         if (newSignature.isNotBlank() && newSignature != previousSignature) {
+            addLog("✅ Breadfast: تغيرت الشاشة بعد المحاولة ${attempt + 1} | signatureLength بعد=${newSignature.length}")
             return true
         }
     }
 
+    addLog("❌ Breadfast: فشل السحب تمامًا - لم تتغير الشاشة بعد 12 محاولة (3 ثوانٍ).")
     return false
 }
 
