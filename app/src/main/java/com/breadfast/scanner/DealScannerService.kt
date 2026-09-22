@@ -295,6 +295,16 @@ private fun isInvalidBreadfastProductName(text: String): Boolean {
         normalized.contains("cart item") ||
         normalized.contains("product_") ||
         normalized.contains("_image") ||
+        normalized.contains("delivery") ||
+        normalized.contains("fees") ||
+        normalized.contains("أكسب") ||
+        normalized.contains("اكسب") ||
+        normalized.contains("نقطة") ||
+        normalized.contains("نقاط") ||
+        normalized.contains("استمتع") ||
+        normalized.contains("رسوم") ||
+        normalized.contains("متابعة") ||
+        normalized.contains("الدفع") ||
         normalized.matches(Regex("""(?:cartitem|cart_item|product)[_\s-]?\d+"""))
 }
 
@@ -2406,8 +2416,8 @@ private fun normalizeRabbitText(text: String): String {
     extractNodes(
         rootInActiveWindow,
         nodes,
-        metrics.heightPixels * 0.10f,
-        metrics.heightPixels * 0.94f
+        metrics.heightPixels * 0.16f,
+        metrics.heightPixels * 0.78f
     )
 
     addLog("📱 cartVisibleNodes: تم العثور على ${nodes.size} عنصرًا")
@@ -2430,19 +2440,19 @@ private fun normalizeRabbitText(text: String): String {
 }
 
     private fun moveCartAndWait(previousSignature: String): Boolean {
-        // يبدأ السحب في قائمة المنتجات وليس فوق بانر التوصيل السفلي.
-        swipeUp(0.72f, 0.30f, 1100L)
+    // يبدأ السحب في قائمة المنتجات وليس فوق بانر التوصيل السفلي.
+    swipeUp(0.78f, 0.18f, 1300L)
 
-        repeat(10) {
-            Thread.sleep(250)
-            val newSignature = cartScreenSignature(cartVisibleNodes())
-            if (newSignature.isNotBlank() && newSignature != previousSignature) {
-                return true
-            }
+    repeat(12) {
+        Thread.sleep(300)
+        val newSignature = cartScreenSignature(cartVisibleNodes())
+        if (newSignature.isNotBlank() && newSignature != previousSignature) {
+            return true
         }
-
-        return false
     }
+
+    return false
+}
 
 
     private fun sendChunksAsText(
