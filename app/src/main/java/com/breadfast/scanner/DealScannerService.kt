@@ -2456,7 +2456,7 @@ private fun normalizeRabbitText(text: String): String {
     private fun moveCartAndWait(previousSignature: String): Boolean {
     addLog("↕️ Breadfast: بدء سحب السلة | signatureLength قبل=${previousSignature.length}")
 
-    swipeUp(0.78f, 0.20f, 1200L)
+        swipeUp(0.75f, 0.25f, 1150L)
 
     repeat(12) { attempt ->
         Thread.sleep(250)
