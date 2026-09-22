@@ -854,7 +854,7 @@ private fun calculateDiscount(
     val metrics = resources.displayMetrics
 
     val startY = metrics.heightPixels * 0.82f
-    val endY = metrics.heightPixels * 0.28f
+    val endY = metrics.heightPixels * 0.25f
 
     addLog(
         "↕️ Rabbit scroll: " +
@@ -880,7 +880,7 @@ private fun calculateDiscount(
                 GestureDescription.StrokeDescription(
                     path,
                     0L,
-                    1800L
+                    2000L
                 )
             )
             .build(),
@@ -1094,7 +1094,7 @@ private fun openCartAndSendReport(
                     if (sentProducts.isEmpty()) {
                         "عروض ممتازة علي ابلكيشن رابيت\n\n"
                     } else {
-                        "ودي كمان\n\n"
+                        "ودول كمان\n\n"
                     }
 
                 val caption = (
