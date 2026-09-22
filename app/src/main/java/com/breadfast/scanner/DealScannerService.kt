@@ -82,6 +82,7 @@ class DealScannerService : AccessibilityService() {
     private var addedItemsCount = 0
     private val rabbitAddAttempts = mutableMapOf<String, Int>()
 
+    private var breadfastScreenshotIndex = 0
     private val replyMarkup = """{"inline_keyboard":[[{"text":"✈️ تليجرام","callback_data":"publish_tg"},{"text":"🟢 واتس اب","callback_data":"publish_wa"}],[{"text":"📘 جروب فيسبوك","callback_data":"publish_fb"},{"text":"📄 صفحة فيسبوك","callback_data":"publish_fb_page"}],[{"text":"🗑️ حذف العرض","callback_data":"delete_deal"}]]}"""
 
     private fun addLog(message: String) {
@@ -1350,6 +1351,8 @@ private fun sendBreadfastCartReport(
     chatId: String,
     deals: List<DealData>
 ) {
+    breadfastScreenshotIndex = 0
+
     var loopCount = 0
     var lastSignature = ""
     var unchangedScreens = 0
@@ -1407,14 +1410,17 @@ private fun sendBreadfastCartReport(
             } catch (e: Exception) {
                 addLog(
                     "❌ خطأ Breadfast Accessibility parser: " +
-                        "${e.javaClass.simpleName}: ${e.message}"
+                        "${e.javaClass.simpleName}: " +
+                        e.message
                 )
                 emptyList()
             }
 
             val batch = allProducts
                 .filter { product ->
-                    val cleanName = normalizeBreadfastText(product.name)
+                    val cleanName =
+                        normalizeBreadfastText(product.name)
+
                     val cleanPrice =
                         normalizeBreadfastPrice(product.price)
                             ?: product.price
@@ -1471,7 +1477,9 @@ private fun sendBreadfastCartReport(
                                             }
 
                                     dealWords
-                                        .intersect(productWords.toSet())
+                                        .intersect(
+                                            productWords.toSet()
+                                        )
                                         .size >= 2
                                 }
 
@@ -1534,11 +1542,18 @@ private fun sendBreadfastCartReport(
                                 "${bitmap.width}x${bitmap.height}"
                         )
 
-                        val topCrop =
-                            (bitmap.height * 0.18f).toInt()
+                        val topCrop: Int
 
                         val bottomCrop =
                             (bitmap.height * 0.22f).toInt()
+
+                        if (breadfastScreenshotIndex == 0) {
+                            topCrop =
+                                (bitmap.height * 0.18f).toInt()
+                        } else {
+                            topCrop =
+                                (bitmap.height * 0.34f).toInt()
+                        }
 
                         val cropHeight =
                             bitmap.height -
@@ -1569,6 +1584,8 @@ private fun sendBreadfastCartReport(
 
                             imageBytes =
                                 stream.toByteArray()
+
+                            breadfastScreenshotIndex++
 
                             croppedBitmap.recycle()
 
@@ -1689,6 +1706,7 @@ private fun sendBreadfastCartReport(
             "${sentProducts.size} منتجات."
     )
 }
+
 
     private fun isRabbitInArabic(): Boolean {
         val root = rootInActiveWindow ?: return resources.configuration.layoutDirection == android.view.View.LAYOUT_DIRECTION_RTL
@@ -2482,20 +2500,16 @@ private fun normalizeRabbitText(text: String): String {
     extractNodes(
         rootInActiveWindow,
         nodes,
-        metrics.heightPixels * 0.14f,
-        metrics.heightPixels * 0.88f
+        metrics.heightPixels * 0.10f,
+        metrics.heightPixels * 0.94f
     )
-
-    val filteredNodes = nodes.filterNot {
-        isInvalidBreadfastCartText(it.text)
-    }.toMutableList()
 
     addLog(
         "📱 cartVisibleNodes: تم العثور على " +
-            "${filteredNodes.size} عنصرًا صالحًا"
+            "${nodes.size} عنصرًا"
     )
 
-    return filteredNodes
+    return nodes
 }
 
     private fun cartScreenSignature(nodes: List<NodeData>): String {
@@ -2515,20 +2529,19 @@ private fun normalizeRabbitText(text: String): String {
     private fun moveCartAndWait(previousSignature: String): Boolean {
     val metrics = resources.displayMetrics
 
-    val startFactor = 0.86f
-    val endFactor = 0.18f
-    val durationMs = 1300L
+    val startX = metrics.widthPixels * 0.50f
+    val startY = metrics.heightPixels * 0.68f
+    val endY = metrics.heightPixels * 0.20f
+
+    addLog(
+        "↕️ Breadfast: بدء تمرير منطقة المنتجات " +
+            "from=${startY.toInt()} " +
+            "to=${endY.toInt()}"
+    )
 
     val path = Path().apply {
-        moveTo(
-            metrics.widthPixels / 2f,
-            metrics.heightPixels * startFactor
-        )
-
-        lineTo(
-            metrics.widthPixels / 2f,
-            metrics.heightPixels * endFactor
-        )
+        moveTo(startX, startY)
+        lineTo(startX, endY)
     }
 
     val dispatched = dispatchGesture(
@@ -2537,7 +2550,7 @@ private fun normalizeRabbitText(text: String): String {
                 GestureDescription.StrokeDescription(
                     path,
                     0L,
-                    durationMs
+                    1100L
                 )
             )
             .build(),
@@ -2547,14 +2560,14 @@ private fun normalizeRabbitText(text: String): String {
 
     if (!dispatched) {
         addLog(
-            "❌ Breadfast: فشل تمرير السلة."
+            "❌ Breadfast: فشل تنفيذ تمرير السلة."
         )
         return false
     }
 
-    Thread.sleep(1600)
+    Thread.sleep(1800)
 
-    repeat(20) {
+    repeat(15) {
         Thread.sleep(300)
 
         val newSignature =
@@ -2565,14 +2578,14 @@ private fun normalizeRabbitText(text: String): String {
             newSignature != previousSignature
         ) {
             addLog(
-                "✅ Breadfast: تم الانتقال إلى محتوى جديد."
+                "✅ Breadfast: تم تحريك السلة وظهرت عناصر جديدة."
             )
             return true
         }
     }
 
     addLog(
-        "⚠️ Breadfast: لم تتغير الشاشة بعد التمرير."
+        "⚠️ Breadfast: تم تنفيذ Gesture لكن لم يتغير محتوى السلة."
     )
 
     return false
