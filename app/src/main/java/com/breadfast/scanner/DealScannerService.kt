@@ -63,7 +63,7 @@ private data class RabbitCartProduct(
         val safeName = baseName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         // وضع اسم المنتج فقط داخل كود الـ Monospace، والوحدة بالخارج
-        return "<code>$safeName</code>$unitStr ب $price جنيه$discountText"
+        return "<code>$safeName</code>$unitStr\nب $price جنيه$discountText"
     }
 }
 
@@ -1380,7 +1380,7 @@ private fun sendBreadfastCartReport(
 
                 val captionPrefix =
                     if (sentProducts.isEmpty()) {
-                        "عروض ممتازة\n\n"
+                        "عروض ممتازة علي تطبيق بريدفاست \n\n"
                     } else {
                         "ودول كمان\n\n"
                     }
@@ -1456,7 +1456,7 @@ private fun sendBreadfastCartReport(
                                             "&gt;"
                                         )
 
-                                "<code>$safeName</code> " +
+                                "<code>$safeName</code>\n " +
                                     "ب $cleanPrice جنيه" +
                                     discountPart
                             }
@@ -2102,8 +2102,9 @@ private fun normalizeRabbitText(text: String): String {
                 if (!productInfo.unit.isNullOrBlank()) {
                     append(" (").append(productInfo.unit).append(")") // الوحدة بخط عادي خارج الكود
                 }
+                    append("\n") // سطر مستقل للسعر والخصم
                 if (!productInfo.salePrice.isNullOrBlank()) {
-                    append(" ب ").append(productInfo.salePrice).append(" جنيه")
+                append("ب ").append(productInfo.salePrice).append(" جنيه")
                 }
                 append(" بخصم ").append(discountPercent).append("%")
             }
