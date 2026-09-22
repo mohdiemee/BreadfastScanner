@@ -162,67 +162,196 @@ class DealScannerService : AccessibilityService() {
 }
 
 private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartProduct> {
-        val nodes = cartVisibleNodes()
-        val products = mutableListOf<BreadfastCartProduct>()
+    val nodes = cartVisibleNodes()
+    val products = mutableListOf<BreadfastCartProduct>()
 
-        // تجاهل قسم "يعجب الناس ايضا" وما تحته تماماً
-        val recommendedNode = nodes.find { 
-            it.text.contains("يعجب", ignoreCase = true) || it.text.contains("الناس", ignoreCase = true) 
-        }
-        val limitY = recommendedNode?.node?.let { getRect(it).top } ?: Int.MAX_VALUE
-
-        val validNodes = nodes.filter { getRect(it.node).bottom < limitY }
-
-        // البحث عن عقد النصوص التي تحتوي على العملة "ج.م"
-        val priceNodes = validNodes.filter { 
-            it.text.contains("ج.م") && 
-            !it.text.contains("باقي") && 
-            !it.text.contains("رسوم") && 
-            !it.text.contains("متابعة") 
-        }
-
-        for (priceNode in priceNodes) {
-            val pRect = getRect(priceNode.node)
-            
-            // البحث عن اسم المنتج مع فلترة الوصف البرمجي للصور
-            val nameNode = validNodes.filter {
-                val nRect = getRect(it.node)
-                val textLower = it.text.lowercase(java.util.Locale.ROOT)
-                nRect.bottom <= pRect.bottom + 60 && 
-                nRect.top >= pRect.top - 350 && 
-                !textLower.contains("ج.م") &&
-                !textLower.matches(Regex("""\d+""")) && 
-                textLower.length > 3 &&
-                !textLower.contains("السلة") &&
-                !textLower.contains("نقطة") &&
-                !textLower.contains("مسح الكل") &&
-                !textLower.contains("product_") && // التعديل: تجاهل الأسماء البرمجية للصور
-                !textLower.contains("_image")
-            }.minByOrNull { Math.abs(getRect(it.node).bottom - pRect.top) }
-
-            if (nameNode != null) {
-                val name = normalizeRabbitText(nameNode.text) 
-                
-                // التعديل: تنظيف السعر من الرموز المخفية أولاً، ثم تحويله وإزالة القروش
-                val rawPriceText = normalizeRabbitText(priceNode.text)
-                val cleanPriceText = rawPriceText.replace(Regex("""[^\d.,]"""), "").replace(",", ".")
-                
-                val priceStr = cleanPriceText.toDoubleOrNull()?.toInt()?.toString() 
-                    ?: cleanPriceText.replace(Regex("""[^\d]"""), "")
-                
-                products.add(
-                    BreadfastCartProduct(
-                        name = name,
-                        price = priceStr,
-                        topY = Math.min(getRect(nameNode.node).top, pRect.top),
-                        bottomY = Math.max(getRect(nameNode.node).bottom, pRect.bottom)
-                    )
-                )
-            }
-        }
-        
-        return products.distinctBy { it.name }.sortedBy { it.topY }
+    val recommendedNode = nodes.find {
+        it.text.contains("يعجب", ignoreCase = true) ||
+            it.text.contains("الناس", ignoreCase = true)
     }
+
+    val limitY = recommendedNode
+        ?.node
+        ?.let { getRect(it).top }
+        ?: Int.MAX_VALUE
+
+    val validNodes = nodes.filter {
+        getRect(it.node).bottom < limitY
+    }
+
+    val priceNodes = validNodes.filter {
+        val text = normalizeBreadfastText(it.text)
+
+        text.contains("ج.م") &&
+            !text.contains("باقي", ignoreCase = true) &&
+            !text.contains("رسوم", ignoreCase = true) &&
+            !text.contains("متابعة", ignoreCase = true)
+    }
+
+    for (priceNode in priceNodes) {
+        val priceRect = getRect(priceNode.node)
+
+        val nameCandidates = validNodes.filter {
+            val nameRect = getRect(it.node)
+            val text = normalizeBreadfastText(it.text)
+
+            nameRect.bottom <= priceRect.bottom + 60 &&
+                nameRect.top >= priceRect.top - 350 &&
+                text.length > 3 &&
+                !text.contains("ج.م", ignoreCase = true) &&
+                !text.matches(Regex("""\d+""")) &&
+                !text.contains("السلة", ignoreCase = true) &&
+                !text.contains("نقطة", ignoreCase = true) &&
+                !text.contains("مسح الكل", ignoreCase = true) &&
+                !text.contains("product_", ignoreCase = true) &&
+                !text.contains("_image", ignoreCase = true) &&
+                !text.contains("cartitem_", ignoreCase = true) &&
+                !text.contains("cart_item", ignoreCase = true) &&
+                !text.contains("cart item", ignoreCase = true) &&
+                !isInvalidBreadfastProductName(text)
+        }
+
+        val nameNode = nameCandidates.minByOrNull {
+            kotlin.math.abs(getRect(it.node).bottom - priceRect.top)
+        }
+
+        if (nameNode == null) {
+            addLog(
+                "⚠️ Breadfast: لم يتم العثور على اسم صالح للسعر: " +
+                    priceNode.text
+            )
+            continue
+        }
+
+        val name = normalizeBreadfastText(nameNode.text)
+
+        if (isInvalidBreadfastProductName(name)) {
+            addLog(
+                "⚠️ Breadfast: تم تجاهل اسم برمجي: $name"
+            )
+            continue
+        }
+
+        val rawPriceText = normalizeBreadfastText(priceNode.text)
+        val price = normalizeBreadfastPrice(rawPriceText)
+
+        if (price == null) {
+            addLog(
+                "⚠️ Breadfast: تعذر استخراج السعر من: " +
+                    rawPriceText
+            )
+            continue
+        }
+
+        products.add(
+            BreadfastCartProduct(
+                name = name,
+                price = price,
+                topY = minOf(
+                    getRect(nameNode.node).top,
+                    priceRect.top
+                ),
+                bottomY = maxOf(
+                    getRect(nameNode.node).bottom,
+                    priceRect.bottom
+                )
+            )
+        )
+    }
+
+    return products
+        .filterNot {
+            isInvalidBreadfastProductName(it.name)
+        }
+        .distinctBy {
+            normalizeProductKey(it.name)
+        }
+        .sortedBy {
+            it.topY
+        }
+}
+
+private fun normalizeBreadfastText(text: String): String {
+    return text
+        .replace("\u200E", "")
+        .replace("\u200F", "")
+        .replace("\u202A", "")
+        .replace("\u202B", "")
+        .replace("\u202C", "")
+        .replace("\u2060", "")
+        .replace("\u00A0", " ")
+        .replace("\n", " ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+}
+
+private fun isInvalidBreadfastProductName(text: String): Boolean {
+    val normalized = normalizeBreadfastText(text)
+        .lowercase(java.util.Locale.ROOT)
+
+    return normalized.contains("cartitem_") ||
+        normalized.contains("cart_item") ||
+        normalized.contains("cart item") ||
+        normalized.contains("product_") ||
+        normalized.contains("_image") ||
+        normalized.matches(Regex("""(?:cartitem|cart_item|product)[_\s-]?\d+"""))
+}
+
+private fun formatBreadfastPrice(value: Double): String {
+    return if (value % 1.0 == 0.0) {
+        value.toInt().toString()
+    } else {
+        String.format(
+            java.util.Locale.US,
+            "%.2f",
+            value
+        )
+    }
+}
+
+private fun normalizeBreadfastPrice(rawText: String): String? {
+    var cleaned = normalizeBreadfastText(rawText)
+        .replace("ج.م", "", ignoreCase = true)
+        .replace("ج م", "", ignoreCase = true)
+        .replace("جنيه", "", ignoreCase = true)
+        .replace("EGP", "", ignoreCase = true)
+        .trim()
+
+    cleaned = cleaned.replace(",", ".")
+
+    val directValue = cleaned
+        .replace(Regex("""[^\d.]"""), "")
+        .toDoubleOrNull()
+
+    if (directValue != null) {
+        /*
+         * Breadfast قد يعيد 59.20 بشكل صحيح،
+         * أو يعيده 5920 بدون الفاصلة.
+         */
+        if (
+            !cleaned.contains(".") &&
+            directValue >= 1000.0 &&
+            directValue <= 500000.0
+        ) {
+            return formatBreadfastPrice(directValue / 100.0)
+        }
+
+        return formatBreadfastPrice(directValue)
+    }
+
+    val digitsOnly = cleaned.replace(Regex("""[^\d]"""), "")
+
+    if (digitsOnly.length >= 4) {
+        val recovered = digitsOnly.toDoubleOrNull()?.div(100.0)
+
+        if (recovered != null && recovered in 1.0..5000.0) {
+            return formatBreadfastPrice(recovered)
+        }
+    }
+
+    return null
+}
+
 
 
 private fun calculateDiscount(
@@ -1147,6 +1276,7 @@ private fun sendBreadfastCartReport(
     var loopCount = 0
     var lastSignature = ""
     var unchangedScreens = 0
+
     val maxLoops = 30
     val sentProducts = mutableSetOf<String>()
 
@@ -1164,12 +1294,17 @@ private fun sendBreadfastCartReport(
 
         if (signature.isBlank()) {
             addLog("⚠️ Breadfast: الشاشة فارغة.")
-            if (loopCount >= 3) break
+
+            if (loopCount >= 3) {
+                break
+            }
+
             Thread.sleep(1500)
             continue
         }
 
-        val screenChanged = signature != lastSignature || loopCount == 1
+        val screenChanged =
+            signature != lastSignature || loopCount == 1
 
         if (!screenChanged) {
             unchangedScreens++
@@ -1195,16 +1330,28 @@ private fun sendBreadfastCartReport(
             } catch (e: Exception) {
                 addLog(
                     "❌ خطأ Breadfast Accessibility parser: " +
-                        "${e.javaClass.simpleName}: " +
-                        e.message
+                        "${e.javaClass.simpleName}: ${e.message}"
                 )
                 emptyList()
             }
 
-            val batch = allProducts.filter { product ->
-                val key = "${normalizeProductKey(product.name)}|${product.price}"
-                !sentProducts.contains(key)
-            }.sortedBy { it.topY }.take(5)
+            val batch = allProducts
+                .filter { product ->
+                    val cleanName = normalizeBreadfastText(product.name)
+                    val cleanPrice =
+                        normalizeBreadfastPrice(product.price)
+                            ?: product.price
+
+                    val key =
+                        "${normalizeProductKey(cleanName)}|$cleanPrice"
+
+                    !sentProducts.contains(key) &&
+                        !isInvalidBreadfastProductName(cleanName)
+                }
+                .sortedBy {
+                    it.topY
+                }
+                .take(5)
 
             if (batch.isEmpty()) {
                 addLog(
@@ -1216,46 +1363,88 @@ private fun sendBreadfastCartReport(
                         "${batch.size}..."
                 )
 
-                val captionPrefix = if (sentProducts.isEmpty()) {
-                    "عروض ممتازة\n\n"
-                } else {
-                    "ودول كمان\n\n"
-                }
+                val captionPrefix =
+                    if (sentProducts.isEmpty()) {
+                        "عروض ممتازة\n\n"
+                    } else {
+                        "ودول كمان\n\n"
+                    }
 
-                val caption = (
-                    captionPrefix +
-                        batch.joinToString("\n\n") { product ->
-                            // البحث عن المنتج في العروض الأصلية لجلب نسبة الخصم
-                            val matchedDeal = deals.find { deal ->
-                                val dealWords = normalizeForCartMatch(deal.originalName).split(Regex("\\s+")).filter { it.length > 2 }
-                                val productWords = normalizeForCartMatch(product.name).split(Regex("\\s+")).filter { it.length > 2 }
-                                dealWords.intersect(productWords.toSet()).size >= 2
-                            }
-                            
-                            val discountPart = if (matchedDeal != null) {
-                                val discountMatch = Regex("""بخصم (\d+)%""").find(matchedDeal.dealText)
-                                if (discountMatch != null) " بخصم ${discountMatch.groupValues[1]}%" else ""
-                            } else ""
+                val caption =
+                    (
+                        captionPrefix +
+                            batch.joinToString("\n\n") { product ->
+                                val matchedDeal = deals.find { deal ->
+                                    val dealWords =
+                                        normalizeForCartMatch(
+                                            deal.originalName
+                                        )
+                                            .split(Regex("\\s+"))
+                                            .filter {
+                                                it.length > 2
+                                            }
 
-                            // فصل اسم المنتج عن الوحدة لعمل تنسيق Monospace على الاسم فقط
-                            val lastOpenParen = product.name.lastIndexOf("(")
-                            val lastCloseParen = product.name.lastIndexOf(")")
-                            
-                            val baseName: String
-                            val unitStr: String
-                            
-                            if (lastOpenParen != -1 && lastCloseParen != -1 && lastCloseParen > lastOpenParen) {
-                                baseName = product.name.substring(0, lastOpenParen).trim()
-                                unitStr = " " + product.name.substring(lastOpenParen, lastCloseParen + 1)
-                            } else {
-                                baseName = product.name
-                                unitStr = ""
+                                    val productWords =
+                                        normalizeForCartMatch(
+                                            product.name
+                                        )
+                                            .split(Regex("\\s+"))
+                                            .filter {
+                                                it.length > 2
+                                            }
+
+                                    dealWords
+                                        .intersect(productWords.toSet())
+                                        .size >= 2
+                                }
+
+                                val discountPart =
+                                    if (matchedDeal != null) {
+                                        Regex(
+                                            """بخصم (\d+)%"""
+                                        )
+                                            .find(
+                                                matchedDeal.dealText
+                                            )
+                                            ?.groupValues
+                                            ?.getOrNull(1)
+                                            ?.let {
+                                                " بخصم $it%"
+                                            }
+                                            ?: ""
+                                    } else {
+                                        ""
+                                    }
+
+                                val cleanName =
+                                    normalizeBreadfastText(
+                                        product.name
+                                    )
+
+                                val cleanPrice =
+                                    normalizeBreadfastPrice(
+                                        product.price
+                                    ) ?: product.price
+
+                                val safeName =
+                                    cleanName
+                                        .replace(
+                                            "&",
+                                            "&amp;"
+                                        )
+                                        .replace(
+                                            "<",
+                                            "&lt;"
+                                        )
+                                        .replace(
+                                            ">",
+                                            "&gt;"
+                                        )
+
+                                "<code>$safeName</code> " +
+                                    "ب $cleanPrice جنيه" +
+                                    discountPart
                             }
-                            
-                            val safeName = baseName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-                            
-                            "<code>$safeName</code>$unitStr ب ${product.price} جنيه$discountPart"
-                        }
                     ).take(1020)
 
                 val bitmap = takeScreenshotSync()
@@ -1268,19 +1457,42 @@ private fun sendBreadfastCartReport(
                                 "${bitmap.width}x${bitmap.height}"
                         )
 
-                        // التعديل: قص أعلى 18% (لإزالة السلة والنقاط) وأسفل 22% (لإزالة زر الدفع والتوصيل)
-                        val topCrop = (bitmap.height * 0.18f).toInt()
-                        val bottomCrop = (bitmap.height * 0.22f).toInt()
-                        val cropHeight = bitmap.height - topCrop - bottomCrop
+                        val topCrop =
+                            (bitmap.height * 0.18f).toInt()
 
-                        if (bitmap.width > 100 && cropHeight > 100) {
-                            val croppedBitmap = Bitmap.createBitmap(
-                                bitmap, 0, topCrop, bitmap.width, cropHeight
+                        val bottomCrop =
+                            (bitmap.height * 0.22f).toInt()
+
+                        val cropHeight =
+                            bitmap.height -
+                                topCrop -
+                                bottomCrop
+
+                        if (
+                            bitmap.width > 100 &&
+                            cropHeight > 100
+                        ) {
+                            val croppedBitmap =
+                                Bitmap.createBitmap(
+                                    bitmap,
+                                    0,
+                                    topCrop,
+                                    bitmap.width,
+                                    cropHeight
+                                )
+
+                            val stream =
+                                ByteArrayOutputStream()
+
+                            croppedBitmap.compress(
+                                Bitmap.CompressFormat.JPEG,
+                                85,
+                                stream
                             )
 
-                            val stream = ByteArrayOutputStream()
-                            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
-                            imageBytes = stream.toByteArray()
+                            imageBytes =
+                                stream.toByteArray()
+
                             croppedBitmap.recycle()
 
                             addLog(
@@ -1288,13 +1500,15 @@ private fun sendBreadfastCartReport(
                                     "${imageBytes.size} bytes"
                             )
                         } else {
-                            addLog("⚠️ Breadfast: أبعاد القص غير صالحة.")
+                            addLog(
+                                "⚠️ Breadfast: أبعاد القص غير صالحة."
+                            )
                         }
                     } catch (e: Exception) {
                         addLog(
                             "❌ Breadfast image error: " +
                                 "${e.javaClass.simpleName}: " +
-                                "${e.message}"
+                                e.message
                         )
                     } finally {
                         if (!bitmap.isRecycled) {
@@ -1302,33 +1516,64 @@ private fun sendBreadfastCartReport(
                         }
                     }
                 } else {
-                    addLog("⚠️ Breadfast: Screenshot رجع null.")
+                    addLog(
+                        "⚠️ Breadfast: Screenshot رجع null."
+                    )
                 }
 
                 val sent = try {
-                    if (imageBytes != null && imageBytes.isNotEmpty()) {
-                        addLog("📤 Breadfast: إرسال صورة Telegram...")
-                        sendTelegramPhotoMultipart(token, chatId, imageBytes, caption)
+                    if (
+                        imageBytes != null &&
+                        imageBytes.isNotEmpty()
+                    ) {
+                        addLog(
+                            "📤 Breadfast: إرسال صورة Telegram..."
+                        )
+
+                        sendTelegramPhotoMultipart(
+                            token,
+                            chatId,
+                            imageBytes,
+                            caption
+                        )
                     } else {
-                        addLog("📤 Breadfast: إرسال النص كبديل...")
-                        sendTelegramMessage(token, chatId, caption)
+                        addLog(
+                            "📤 Breadfast: إرسال النص كبديل..."
+                        )
+
+                        sendTelegramMessage(
+                            token,
+                            chatId,
+                            caption
+                        )
                     }
                 } catch (e: Exception) {
                     addLog(
                         "❌ Breadfast Telegram error: " +
                             "${e.javaClass.simpleName}: " +
-                            "${e.message}"
+                            e.message
                     )
                     false
                 }
 
                 if (!sent) {
-                    addLog("❌ Breadfast: فشل إرسال الدفعة.")
+                    addLog(
+                        "❌ Breadfast: فشل إرسال الدفعة."
+                    )
                     break
                 }
 
                 batch.forEach { product ->
-                    val key = "${normalizeProductKey(product.name)}|${product.price}"
+                    val cleanName =
+                        normalizeBreadfastText(product.name)
+
+                    val cleanPrice =
+                        normalizeBreadfastPrice(product.price)
+                            ?: product.price
+
+                    val key =
+                        "${normalizeProductKey(cleanName)}|$cleanPrice"
+
                     sentProducts.add(key)
                 }
 
@@ -1347,13 +1592,15 @@ private fun sendBreadfastCartReport(
             addLog(
                 "❌ Breadfast: خطأ أثناء التمرير: " +
                     "${e.javaClass.simpleName}: " +
-                    "${e.message}"
+                    e.message
             )
             false
         }
 
         if (!moved) {
-            addLog("🏁 Breadfast: تعذر تحريك السلة.")
+            addLog(
+                "🏁 Breadfast: تعذر تحريك السلة."
+            )
             break
         }
 
@@ -2535,6 +2782,13 @@ private fun takeScreenshotSync(): Bitmap? {
                     "UTF-8"
                 )
             )
+            append("&parse_mode=")
+append(
+    URLEncoder.encode(
+        "HTML",
+        "UTF-8"
+    )
+)
         }
 
         connection.outputStream.use { output ->
