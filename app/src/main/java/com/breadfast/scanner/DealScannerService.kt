@@ -161,6 +161,62 @@ class DealScannerService : AccessibilityService() {
     )
 }
 
+private fun closeBreadfastPromoBanner(): Boolean {
+    val root = rootInActiveWindow ?: return false
+    val metrics = resources.displayMetrics
+
+    fun scan(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+
+        val text = node.text?.toString()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+        val id = node.viewIdResourceName ?: ""
+        val rect = getRect(node)
+
+        val combined = "$text $desc $id"
+            .lowercase(java.util.Locale.ROOT)
+
+        val isCloseText =
+            text.equals("x", ignoreCase = true) ||
+                text.equals("✕") ||
+                text.equals("×") ||
+                desc.contains("close", ignoreCase = true) ||
+                desc.contains("إغلاق", ignoreCase = true) ||
+                id.contains("close", ignoreCase = true)
+
+        val isTopLeft =
+            !rect.isEmpty &&
+                rect.left <= metrics.widthPixels * 0.25f &&
+                rect.top <= metrics.heightPixels * 0.25f
+
+        if (isCloseText && isTopLeft) {
+            addLog(
+                "🔎 Breadfast: تم العثور على زر إغلاق البانر " +
+                    "| text=$text | desc=$desc | id=$id | rect=$rect"
+            )
+
+            val clicked =
+                clickNodeSafely(node) ||
+                    (node.parent != null && clickNodeSafely(node.parent))
+
+            if (clicked) {
+                addLog("✅ Breadfast: تم إغلاق البانر الترويجي بنجاح.")
+                return true
+            }
+
+            addLog("⚠️ Breadfast: تم العثور على زر الإغلاق لكن فشل الضغط عليه.")
+        }
+
+        for (i in 0 until node.childCount) {
+            if (scan(node.getChild(i))) return true
+        }
+
+        return false
+    }
+
+    return scan(root)
+}
+    
 private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartProduct> {
     val nodes = cartVisibleNodes()
     val products = mutableListOf<BreadfastCartProduct>()
@@ -2125,7 +2181,14 @@ private fun normalizeRabbitText(text: String): String {
     // ==========================================
     private fun runBreadfastAutomation(prefs: SharedPreferences) {
         addLog("⏳ تم فتح بريدفاست.. ننتظر 15 ثانية للتحميل...")
-        Thread.sleep(15000) 
+        Thread.sleep(15000)
+
+if (!closeBreadfastPromoBanner()) {
+    addLog("ℹ️ Breadfast: لم يظهر بانر ترويجي أو لم يتم العثور على زر إغلاق.")
+    Thread.sleep(1000)
+} else {
+    Thread.sleep(2000)
+} 
 
         val initialCartNode = findNodeByText(rootInActiveWindow, "السلة") ?: findNodeByText(rootInActiveWindow, "Cart")
         if (initialCartNode != null) {
@@ -2154,9 +2217,16 @@ private fun normalizeRabbitText(text: String): String {
             scrollAttempts++
         }
 
-        if (dealsNode == null) return
+        if (dealsNode == null) {
+            addLog("❌ Breadfast: لم يتم العثور على صفحة العروض بعد $scrollAttempts محاولات.")
+            return
+        }
+
+        addLog("✅ Breadfast: تم العثور على صفحة العروض، جاري فتحها.")
         clickNodeSafely(dealsNode) 
         Thread.sleep(6000)
+
+        addLog("✅ Breadfast: تم فتح صفحة العروض بنجاح.")
 
         val minDiscount = prefs.getInt("MIN_DISCOUNT", 40)
         val cooldownHours = prefs.getInt("COOLDOWN_HOURS", 24)
@@ -2171,6 +2241,8 @@ private fun normalizeRabbitText(text: String): String {
         val metrics = resources.displayMetrics
         val safeTop = metrics.heightPixels * 0.15f
         val safeBottom = metrics.heightPixels * 0.85f
+
+        addLog("🔍 Breadfast: بدء فحص صفحة العروض | الحد الأدنى للخصم=$minDiscount%")
         
         while (totalScrolls < 1000) {
             val visibleNodes = mutableListOf<NodeData>()
@@ -2178,29 +2250,45 @@ private fun normalizeRabbitText(text: String): String {
             val currentScreenContent = visibleNodes.map { it.text }.distinct().sorted().joinToString("|")
             
             analyzeAndAddToCart(visibleNodes, minDiscount, foundDeals, processedProducts, historyMap, cooldownMillis, prefs)
+
+            if (totalScrolls % 20 == 0) {
+                addLog("↕️ Breadfast: سكرول رقم $totalScrolls | العروض المكتشفة=${foundDeals.size} | العناصر الظاهرة=${visibleNodes.size}")
+            }
             
             Thread.sleep(900)
             if (currentScreenContent == previousScreenContent) {
                 emptyScrolls++
-                if (emptyScrolls >= 3) break 
+                addLog("⚠️ Breadfast: محتوى الشاشة لم يتغير | المحاولة $emptyScrolls/3")
+
+                if (emptyScrolls >= 3) {
+                    addLog("🏁 Breadfast: انتهى محتوى صفحة العروض بعد $totalScrolls سكرول.")
+                    break 
+                }
             } else {
                 emptyScrolls = 0
             }
+
             previousScreenContent = currentScreenContent
             totalScrolls++
             swipeUp(0.8f, 0.5f, 400L)
             Thread.sleep(1100) 
         }
 
+        addLog("📊 Breadfast: انتهى فحص العروض | إجمالي السكرول=$totalScrolls | إجمالي العروض=${foundDeals.size}")
+
         val token = prefs.getString("BOT_TOKEN", "") ?: ""
         val chatId = prefs.getString("CHAT_ID", "") ?: ""
 
         if (foundDeals.isNotEmpty()) {
+            addLog("🛒 Breadfast: تم العثور على ${foundDeals.size} عروض، جاري فتح السلة وإرسال التقرير.")
+
             if (Build.VERSION.SDK_INT >= 30) {
                 openCartAndSendReport(token, chatId, foundDeals, isCartAlreadyOpen = false, appType = "BREADFAST")
             } else {
                 sendChunksAsText(token, chatId, foundDeals.filter { it.originalName != "منتج مميز" }.map { it.dealText }.chunked(5), appType = "BREADFAST")
             }
+        } else {
+            addLog("📉 Breadfast: لم يتم العثور على أي عروض تحقق حد الخصم ($minDiscount%).")
         }
     }
 
@@ -2283,16 +2371,30 @@ private fun normalizeRabbitText(text: String): String {
                 val lastSentTime = historyMap[productName]
                 if (lastSentTime != null && (System.currentTimeMillis() - lastSentTime) < cooldownMillis) return 
                 
+                addLog("🔎 Breadfast يحقق شرط الخصم ($discountPercent%): $productName | القديم=$oldPrice | الجديد=$newPrice")
+
                 try {
                     val productCard = findProductCardBreadfast(priceNode)
-                    if (productCard != null && forceClickAddButtonBreadfast(productCard)) addedItemsCount++
+                    val clicked = productCard != null && forceClickAddButtonBreadfast(productCard)
+
+                    if (clicked) {
+                        addedItemsCount++
+                        addLog("✅ Breadfast: تم الضغط على إضافة للسلة: $productName")
+                    } else {
+                        addLog("⚠️ Breadfast: تعذر الضغط على إضافة للسلة: $productName")
+                    }
+
                     var cleanName = productName.replace("\n", " ").trim()
                     cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
                     deals.add(DealData(originalName = productName, dealText = "$cleanName ب $newPrice جنيه بخصم $discountPercent%"))
                     processed.add(productName)
                     historyMap[productName] = System.currentTimeMillis()
                     saveHistoryMap(prefs, historyMap)
-                } catch (e: Exception) { }
+
+                    addLog("✅ Breadfast: تمت إضافة العرض إلى القائمة: $cleanName ب $newPrice جنيه بخصم $discountPercent%")
+                } catch (e: Exception) {
+                    addLog("❌ Breadfast processDealNode error: ${e.javaClass.simpleName}: ${e.message}")
+                }
             }
         }
     }
