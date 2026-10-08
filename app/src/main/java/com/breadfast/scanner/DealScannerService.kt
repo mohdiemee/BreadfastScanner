@@ -2208,23 +2208,47 @@ if (!closeBreadfastPromoBanner()) {
             Thread.sleep(3000)
         }
 
-        var dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
-        var scrollAttempts = 0
-        while (dealsNode == null && scrollAttempts < 4) {
-            swipeUp(0.8f, 0.5f, 400L)
-            Thread.sleep(1500)
-            dealsNode = findNodeByText(rootInActiveWindow, "Deals") ?: findNodeByText(rootInActiveWindow, "عروض")
-            scrollAttempts++
-        }
+        // 1. استخدام الدالة الذكية الجديدة للبحث
+var dealsNode = findDealsButtonSmart(rootInActiveWindow)
+var scrollAttempts = 0
 
-        if (dealsNode == null) {
-            addLog("❌ Breadfast: لم يتم العثور على صفحة العروض بعد $scrollAttempts محاولات.")
-            return
-        }
+while (dealsNode == null && scrollAttempts < 6) { // زيادة عدد المحاولات للوصول للقسم
+    swipeUp(0.8f, 0.5f, 400L)
+    Thread.sleep(1500)
+    dealsNode = findDealsButtonSmart(rootInActiveWindow)
+    scrollAttempts++
+}
 
-        addLog("✅ Breadfast: تم العثور على صفحة العروض، جاري فتحها.")
-        clickNodeSafely(dealsNode) 
-        Thread.sleep(6000)
+if (dealsNode == null) {
+    addLog("❌ Breadfast: لم يتم العثور على صفحة العروض بعد $scrollAttempts محاولات.")
+    return
+}
+
+addLog("✅ Breadfast: تم العثور على صفحة العروض، جاري تحليل طريقة الفتح.")
+
+// 2. تكتيك الضغط الديناميكي
+// المحاولة الأولى: البحث عن الحاوية الأب (التي تضم الصورة والنص معاً) والتي تقبل الضغط
+val clickableParent = findClickableParent(dealsNode, 5)
+
+val isClicked = if (clickableParent != null) {
+    addLog("🎯 Breadfast: تم العثور على الزر الأب، جاري الضغط...")
+    clickNodeSafely(clickableParent)
+} else {
+    // المحاولة الثانية (الحل السحري): إذا كان النص غير قابل للضغط برمجياً، 
+    // نقوم بحساب إحداثيات النص، ونأمر الهاتف بالضغط "فوق" النص بـ 70 بيكسل 
+    // (وهو المكان التقريبي للدائرة التي تحتوي على أيقونة العروض).
+    addLog("🎯 Breadfast: الأب غير قابل للضغط، جاري النقر بالإحداثيات فوق النص...")
+    val rect = getRect(dealsNode)
+    // نضغط في المنتصف أفقياً، وأعلى النص عمودياً
+    tapScreenPoint(rect.centerX().toFloat(), rect.top - 70f)
+}
+
+// محاولة أخيرة احتياطية إذا فشلت الإحداثيات
+if (!isClicked) {
+    clickNodeCenter(dealsNode)
+}
+
+Thread.sleep(6000)
 
         addLog("✅ Breadfast: تم فتح صفحة العروض بنجاح.")
 
@@ -2992,6 +3016,31 @@ append(
         return null
     }
 
+    private fun findDealsButtonSmart(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+    if (node == null) return null
+    
+    // سحب النص وتنظيفه من أي مسافات أو أسطر جديدة (تدمج السطرين في سطر واحد)
+    val text = (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
+    val normalized = normalizeBreadfastText(text).lowercase(java.util.Locale.ROOT)
+
+    // البحث العريض (Fuzzy Matching) لضمان التقاط أي تغيير مستقبلي
+    val isDealNode = normalized.contains("عروض") || 
+                     normalized.contains("خصومات") || 
+                     normalized.contains("deals") || 
+                     normalized.contains("offers") || 
+                     normalized.contains("promotions")
+
+    if (isDealNode) {
+        return node
+    }
+
+    // البحث المتكرر (Recursion) في باقي عناصر الشاشة
+    for (i in 0 until node.childCount) {
+        val result = findDealsButtonSmart(node.getChild(i))
+        if (result != null) return result
+    }
+    return null
+}
 
     private fun normalizedText(node: AccessibilityNodeInfo): String {
         return (node.text?.toString() ?: node.contentDescription?.toString() ?: "").trim()
