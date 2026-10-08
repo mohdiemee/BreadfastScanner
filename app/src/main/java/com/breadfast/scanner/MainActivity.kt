@@ -29,24 +29,6 @@ class MainActivity : Activity() {
             setPadding(40, 40, 40, 40)
         }
 
-        // إعداد حالة البوت وزر التبديل مبكراً لربطهم بالأزرار الجديدة
-        val statusText = TextView(this).apply {
-            val isActive = prefs.getBoolean("IS_ACTIVE", false)
-            text = if (isActive) "حالة البوت: يعمل 🟢" else "حالة البوت: متوقف 🔴"
-            textSize = 18f
-            setPadding(0, 40, 0, 20)
-            gravity = Gravity.CENTER
-            setTextColor(Color.BLACK)
-        }
-
-        val toggleBtn = Button(this).apply {
-            val isActive = prefs.getBoolean("IS_ACTIVE", false)
-            text = if (isActive) "إيقاف البوت" else "تشغيل البوت"
-            setBackgroundColor(if (isActive) Color.parseColor("#F44336") else Color.parseColor("#4CAF50"))
-            setTextColor(Color.WHITE)
-            textSize = 18f
-        }
-
         // ==========================================
         // 1. الإعدادات العامة (مشتركة بين التطبيقين)
         // ==========================================
@@ -131,30 +113,25 @@ class MainActivity : Activity() {
         }
         breadfastLayout.addView(bfSelectAppBtn)
 
-        val btnStartBreadfastNow = Button(this).apply {
-            text = "تشغيل بوت بريدفاست الآن ▶️"
-            setBackgroundColor(Color.parseColor("#E65100"))
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 20, 0, 0) }
-            setOnClickListener {
-                prefs.edit().apply {
-                    putBoolean("IS_ACTIVE", true)
-                    putBoolean("IS_AUTO_RUNNING", true)
-                    putString("CURRENT_TASK", "BREADFAST")
-                    putString("BREADFAST_NEGATIVE_KEYWORDS", bfKeywordsInput.text.toString())
-                    apply()
-                }
-                statusText.text = "حالة البوت: يعمل 🟢"
-                toggleBtn.text = "إيقاف البوت"
-                toggleBtn.setBackgroundColor(Color.parseColor("#F44336"))
-
-                val targetPkg = prefs.getString("TARGET_PACKAGE", "com.breadfast.application")
-                val intent = packageManager.getLaunchIntentForPackage(targetPkg!!)
-                if (intent != null) startActivity(intent)
-                else Toast.makeText(this@MainActivity, "التطبيق غير مثبت!", Toast.LENGTH_SHORT).show()
-            }
+        // حالة ومفتاح تشغيل جدولة بريدفاست
+        val bfStatusText = TextView(this).apply {
+            val isActive = prefs.getBoolean("BREADFAST_ACTIVE", false)
+            text = if (isActive) "حالة بريدفاست: مفعل 🟢" else "حالة بريدفاست: متوقف 🔴"
+            textSize = 16f
+            setPadding(0, 30, 0, 10)
+            gravity = Gravity.CENTER
+            setTextColor(Color.BLACK)
         }
-        breadfastLayout.addView(btnStartBreadfastNow)
+        breadfastLayout.addView(bfStatusText)
+
+        val btnToggleBreadfast = Button(this).apply {
+            val isActive = prefs.getBoolean("BREADFAST_ACTIVE", false)
+            text = if (isActive) "إيقاف جدولة بريدفاست" else "تفعيل جدولة بريدفاست"
+            setBackgroundColor(if (isActive) Color.parseColor("#F44336") else Color.parseColor("#FF9800"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 10, 0, 0) }
+        }
+        breadfastLayout.addView(btnToggleBreadfast)
 
         // ------------------------------------------
         // قسم رابيت
@@ -180,40 +157,88 @@ class MainActivity : Activity() {
         }
         rabbitLayout.addView(rbSelectAppBtn)
 
-        val btnStartRabbitNow = Button(this).apply {
-            text = "تشغيل بوت رابيت الآن ▶️"
-            setBackgroundColor(Color.parseColor("#2E7D32"))
-            setTextColor(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 20, 0, 0) }
-            setOnClickListener {
-                prefs.edit().apply {
-                    putBoolean("IS_ACTIVE", true)
-                    putBoolean("IS_AUTO_RUNNING", true)
-                    putString("CURRENT_TASK", "RABBIT")
-                    putString("RABBIT_NEGATIVE_KEYWORDS", rbKeywordsInput.text.toString())
-                    apply()
-                }
-                statusText.text = "حالة البوت: يعمل 🟢"
-                toggleBtn.text = "إيقاف البوت"
-                toggleBtn.setBackgroundColor(Color.parseColor("#F44336"))
-
-                val targetPkg = prefs.getString("RABBIT_PACKAGE", "com.rabbit.grocery")
-                val intent = packageManager.getLaunchIntentForPackage(targetPkg!!)
-                if (intent != null) startActivity(intent)
-                else Toast.makeText(this@MainActivity, "التطبيق غير مثبت!", Toast.LENGTH_SHORT).show()
-            }
+        // حالة ومفتاح تشغيل جدولة رابيت
+        val rbStatusText = TextView(this).apply {
+            val isActive = prefs.getBoolean("RABBIT_ACTIVE", false)
+            text = if (isActive) "حالة رابيت: مفعل 🟢" else "حالة رابيت: متوقف 🔴"
+            textSize = 16f
+            setPadding(0, 30, 0, 10)
+            gravity = Gravity.CENTER
+            setTextColor(Color.BLACK)
         }
-        rabbitLayout.addView(btnStartRabbitNow)
+        rabbitLayout.addView(rbStatusText)
+
+        val btnToggleRabbit = Button(this).apply {
+            val isActive = prefs.getBoolean("RABBIT_ACTIVE", false)
+            text = if (isActive) "إيقاف جدولة رابيت" else "تفعيل جدولة رابيت"
+            setBackgroundColor(if (isActive) Color.parseColor("#F44336") else Color.parseColor("#4CAF50"))
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 10, 0, 0) }
+        }
+        rabbitLayout.addView(btnToggleRabbit)
 
         mainLayout.addView(breadfastLayout)
         mainLayout.addView(rabbitLayout)
         mainLayout.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(1, 40) })
 
         // ==========================================
-        // 3. أزرار التحكم والحفظ (العامة)
+        // 3. برمجة أزرار التشغيل المستقلة ودالة الجدولة
         // ==========================================
+        fun syncSchedules() {
+            val bfActive = prefs.getBoolean("BREADFAST_ACTIVE", false)
+            val rbActive = prefs.getBoolean("RABBIT_ACTIVE", false)
+            
+            // السماح للخدمة بالعمل إذا كان أي من التطبيقين مفعلاً
+            prefs.edit().putBoolean("IS_ACTIVE", bfActive || rbActive).apply()
+            
+            // مسح كل الجداول لتجنب التكرار
+            AlarmScheduler.cancelAll(this@MainActivity)
+            
+            // جدولة بريدفاست فقط إذا كان مفعلاً
+            if (bfActive) {
+                AlarmScheduler.scheduleAllForApp(this@MainActivity, "BREADFAST", bfTimesInput.text.toString())
+            }
+            
+            // جدولة رابيت فقط إذا كان مفعلاً
+            if (rbActive) {
+                AlarmScheduler.scheduleAllForApp(this@MainActivity, "RABBIT", rbTimesInput.text.toString())
+            }
+        }
+
+        btnToggleBreadfast.setOnClickListener {
+            val newState = !prefs.getBoolean("BREADFAST_ACTIVE", false)
+            prefs.edit().putBoolean("BREADFAST_ACTIVE", newState).apply()
+            
+            if (newState) {
+                btnToggleBreadfast.text = "إيقاف جدولة بريدفاست"
+                btnToggleBreadfast.setBackgroundColor(Color.parseColor("#F44336"))
+                bfStatusText.text = "حالة بريدفاست: مفعل 🟢"
+            } else {
+                btnToggleBreadfast.text = "تفعيل جدولة بريدفاست"
+                btnToggleBreadfast.setBackgroundColor(Color.parseColor("#FF9800"))
+                bfStatusText.text = "حالة بريدفاست: متوقف 🔴"
+            }
+            syncSchedules()
+        }
+
+        btnToggleRabbit.setOnClickListener {
+            val newState = !prefs.getBoolean("RABBIT_ACTIVE", false)
+            prefs.edit().putBoolean("RABBIT_ACTIVE", newState).apply()
+            
+            if (newState) {
+                btnToggleRabbit.text = "إيقاف جدولة رابيت"
+                btnToggleRabbit.setBackgroundColor(Color.parseColor("#F44336"))
+                rbStatusText.text = "حالة رابيت: مفعل 🟢"
+            } else {
+                btnToggleRabbit.text = "تفعيل جدولة رابيت"
+                btnToggleRabbit.setBackgroundColor(Color.parseColor("#4CAF50"))
+                rbStatusText.text = "حالة رابيت: متوقف 🔴"
+            }
+            syncSchedules()
+        }
+
         val saveBtn = Button(this).apply {
-            text = "حفظ كافة الإعدادات والجدولة ⏱️"
+            text = "حفظ كافة الإعدادات 💾"
             setBackgroundColor(Color.parseColor("#2196F3"))
             setTextColor(Color.WHITE)
             textSize = 16f
@@ -234,42 +259,20 @@ class MainActivity : Activity() {
                     apply()
                 }
                 
-                AlarmScheduler.scheduleAllForApp(this@MainActivity, "BREADFAST", bfTimesInput.text.toString())
-                AlarmScheduler.scheduleAllForApp(this@MainActivity, "RABBIT", rbTimesInput.text.toString())
+                syncSchedules() // تحديث الجداول بعد حفظ الأوقات الجديدة
                 
-                Toast.makeText(this@MainActivity, "تم حفظ جميع الإعدادات وجدولتها!", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "تم حفظ الإعدادات وتحديث الجداول المفعّلة!", Toast.LENGTH_LONG).show()
                 val newlySavedToken = prefs.getString("BOT_TOKEN", "") ?: ""
                 tokenInput.setText(if (newlySavedToken.length > 4) newlySavedToken.take(2) + "*".repeat(newlySavedToken.length - 4) + newlySavedToken.takeLast(2) else newlySavedToken)
             }
         }
         mainLayout.addView(saveBtn)
 
-        // إضافة أزرار الحالة (تم تعريفها في الأعلى لربطها بأزرار التشغيل المباشر)
-        mainLayout.addView(statusText)
-
-        toggleBtn.setOnClickListener {
-            val newState = !prefs.getBoolean("IS_ACTIVE", false)
-            prefs.edit().putBoolean("IS_ACTIVE", newState).apply()
-            if (newState) {
-                toggleBtn.text = "إيقاف البوت"
-                toggleBtn.setBackgroundColor(Color.parseColor("#F44336"))
-                statusText.text = "حالة البوت: يعمل 🟢"
-                AlarmScheduler.scheduleAllForApp(this@MainActivity, "BREADFAST", bfTimesInput.text.toString())
-                AlarmScheduler.scheduleAllForApp(this@MainActivity, "RABBIT", rbTimesInput.text.toString())
-            } else {
-                toggleBtn.text = "تشغيل البوت"
-                toggleBtn.setBackgroundColor(Color.parseColor("#4CAF50"))
-                statusText.text = "حالة البوت: متوقف 🔴"
-                AlarmScheduler.cancelAll(this@MainActivity)
-                prefs.edit().putBoolean("IS_AUTO_RUNNING", false).apply()
-            }
-        }
-        mainLayout.addView(toggleBtn)
-        
         val accessBtn = Button(this).apply {
             text = "فتح إعدادات الصلاحية (Accessibility)"
             setBackgroundColor(Color.parseColor("#9E9E9E"))
             setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 20, 0, 0) }
             setOnClickListener { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
         mainLayout.addView(accessBtn)
