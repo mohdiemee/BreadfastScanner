@@ -93,11 +93,11 @@ class MainActivity : Activity() {
         // قسم بريدفاست
         // ------------------------------------------
         breadfastLayout.addView(createLabel("الحد الأدنى لخصم بريدفاست (%):"))
-        val bfDiscountInput = createEditText(prefs.getInt("MIN_DISCOUNT", 40).toString(), InputType.TYPE_CLASS_NUMBER)
+        val bfDiscountInput = createEditText(prefs.getInt("MIN_DISCOUNT", 46).toString(), InputType.TYPE_CLASS_NUMBER)
         breadfastLayout.addView(bfDiscountInput)
 
-        breadfastLayout.addView(createLabel("مواعيد الجدولة (مثال: 23:50, 05:50):"))
-        val bfTimesInput = createEditText(prefs.getString("BREADFAST_RUN_TIMES", "23:50, 11:50"), InputType.TYPE_CLASS_TEXT)
+        breadfastLayout.addView(createLabel("مواعيد الجدولة (مثال: 10:05, 12:05):"))
+        val bfTimesInput = createEditText(prefs.getString("BREADFAST_RUN_TIMES", "10:05, 12:05, 14:05, 16:05, 18:05, 20:05, 22:05"), InputType.TYPE_CLASS_TEXT)
         breadfastLayout.addView(bfTimesInput)
 
         breadfastLayout.addView(createLabel("كلمات سلبية مستبعدة (مفصولة بفاصلة):"))
@@ -137,11 +137,11 @@ class MainActivity : Activity() {
         // قسم رابيت
         // ------------------------------------------
         rabbitLayout.addView(createLabel("الحد الأدنى لخصم رابيت (%):"))
-        val rbDiscountInput = createEditText(prefs.getInt("RABBIT_MIN_DISCOUNT", 30).toString(), InputType.TYPE_CLASS_NUMBER)
+        val rbDiscountInput = createEditText(prefs.getInt("RABBIT_MIN_DISCOUNT", 41).toString(), InputType.TYPE_CLASS_NUMBER)
         rabbitLayout.addView(rbDiscountInput)
 
-        rabbitLayout.addView(createLabel("مواعيد الجدولة (مثال: 23:30, 06:30):"))
-        val rbTimesInput = createEditText(prefs.getString("RABBIT_RUN_TIMES", "23:30, 12:30"), InputType.TYPE_CLASS_TEXT)
+        rabbitLayout.addView(createLabel("مواعيد الجدولة (مثال: 11:05, 13:05):"))
+        val rbTimesInput = createEditText(prefs.getString("RABBIT_RUN_TIMES", "11:05, 13:05, 15:05, 17:05, 19:05, 21:05, 23:05"), InputType.TYPE_CLASS_TEXT)
         rabbitLayout.addView(rbTimesInput)
 
         rabbitLayout.addView(createLabel("كلمات سلبية مستبعدة (مفصولة بفاصلة):"))
@@ -249,11 +249,11 @@ class MainActivity : Activity() {
                     putString("CHAT_ID", chatInput.text.toString())
                     putInt("COOLDOWN_HOURS", cooldownInput.text.toString().toIntOrNull() ?: 24)
                     
-                    putInt("MIN_DISCOUNT", bfDiscountInput.text.toString().toIntOrNull() ?: 40)
+                    putInt("MIN_DISCOUNT", bfDiscountInput.text.toString().toIntOrNull() ?: 46) // قيمة الخصم الافتراضية
                     putString("BREADFAST_RUN_TIMES", bfTimesInput.text.toString())
                     putString("BREADFAST_NEGATIVE_KEYWORDS", bfKeywordsInput.text.toString())
                     
-                    putInt("RABBIT_MIN_DISCOUNT", rbDiscountInput.text.toString().toIntOrNull() ?: 30)
+                    putInt("RABBIT_MIN_DISCOUNT", rbDiscountInput.text.toString().toIntOrNull() ?: 41) // قيمة الخصم الافتراضية
                     putString("RABBIT_RUN_TIMES", rbTimesInput.text.toString())
                     putString("RABBIT_NEGATIVE_KEYWORDS", rbKeywordsInput.text.toString())
                     apply()
