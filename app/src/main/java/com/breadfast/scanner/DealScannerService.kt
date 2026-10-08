@@ -331,6 +331,33 @@ private fun parseBreadfastCartProductsFromAccessibility(): List<BreadfastCartPro
     return finalList
 }
 
+
+private fun containsNegativeKeyword(productName: String, prefs: SharedPreferences, appType: String): Boolean {
+    val defaultKeywords = "جراب,واقي عدسات,واقي شاشة"
+    
+    // تحديد مفتاح الحفظ بناءً على التطبيق
+    val prefKey = if (appType == "RABBIT") {
+        "RABBIT_NEGATIVE_KEYWORDS"
+    } else {
+        "BREADFAST_NEGATIVE_KEYWORDS"
+    }
+    
+    val keywordsString = prefs.getString(prefKey, defaultKeywords) ?: defaultKeywords
+    
+    val keywordsList = keywordsString.split(",")
+        .map { it.trim().lowercase(java.util.Locale.ROOT) }
+        .filter { it.isNotEmpty() }
+        
+    val normalizedProductName = productName.lowercase(java.util.Locale.ROOT)
+
+    for (word in keywordsList) {
+        if (normalizedProductName.contains(word)) {
+            return true 
+        }
+    }
+    return false
+}
+
 private fun normalizeBreadfastText(text: String): String {
     return text
         .replace("\u200E", "")
@@ -2098,83 +2125,90 @@ private fun normalizeRabbitText(text: String): String {
     }
 
     private fun analyzeRabbitDeals(
-        nodesList: List<NodeData>, minDiscount: Int, deals: MutableList<DealData>, 
-        processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
-        cooldownMillis: Long, prefs: SharedPreferences
-    ): Boolean {
-        val processedCards = mutableSetOf<String>()
+    nodesList: List<NodeData>, minDiscount: Int, deals: MutableList<DealData>, 
+    processed: MutableSet<String>, historyMap: MutableMap<String, Long>, 
+    cooldownMillis: Long, prefs: SharedPreferences
+): Boolean {
+    val processedCards = mutableSetOf<String>()
+    
+    for (current in nodesList) {
+        val badgeText = current.text.trim()
+        val discountMatch = Regex("""[-]?\s*(\d{1,2})\s*[%٪]-?""").find(badgeText) ?: continue
+        val discountPercent = discountMatch.groupValues[1].toIntOrNull() ?: continue
+        if (discountPercent < minDiscount) continue
         
-        for (current in nodesList) {
-            val badgeText = current.text.trim()
-            val discountMatch = Regex("""[-]?\s*(\d{1,2})\s*[%٪]-?""").find(badgeText) ?: continue
-            val discountPercent = discountMatch.groupValues[1].toIntOrNull() ?: continue
-            if (discountPercent < minDiscount) continue
-            
-            val productCard = findRabbitProductCard(current.node)
-            if (productCard == null) continue
-            
-            val cardRect = getRect(productCard)
-            val cardKey = "${cardRect.left}:${cardRect.top}:${cardRect.right}:${cardRect.bottom}"
-            if (!processedCards.add(cardKey)) continue
-            
-            val productInfo = extractRabbitProductInfo(productCard)
-            if (productInfo == null || productInfo.name.length < 3) continue
-            
-            val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
-            
-            // التعديل: تم نقل اللوج بعد هذه السطور حتى لا يتم تسجيل المنتج إلا إذا كان جديداً ولم يتم تسجيله من قبل
-            if (processed.contains(productKey)) continue
-            val lastSent = historyMap[productKey]
-            if (lastSent != null && System.currentTimeMillis() - lastSent < cooldownMillis) continue
-            
-            val attempts = rabbitAddAttempts[productKey] ?: 0
-            if (attempts >= 3) continue
-
-            // مكان اللوج الصحيح: يظهر مرة واحدة فقط لكل منتج جديد يكتشفه البوت
-            addLog("🔎 يحقق شرط الخصم ($discountPercent%): ${productInfo.name} - السعر: ${productInfo.salePrice ?: "غير متاح"}")
-
-            var plusClicked = false
-            
-            val addButton = findRabbitAddButton(productCard)
-            if (addButton != null) {
-                plusClicked = clickNodeCenter(addButton)
-            }
-
-            if (!plusClicked) {
-                rabbitAddAttempts[productKey] = attempts + 1
-                addLog("⚠️ Rabbit: تعذر النقر الآمن لـ ${productInfo.name} (محاولة ${attempts + 1}/3)")
-                continue
-            }
-            
-            rabbitAddAttempts.remove(productKey)
-            
-            // تحويل الرموز لاسم المنتج الأساسي فقط لتجنب أخطاء تليجرام عند استخدام وضع HTML
-            val safeName = productInfo.name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-            // بناء النص النهائي بحيث يقتصر الـ Monospace على الاسم فقط
-            val dealText = buildString {
-                append("<code>").append(safeName).append("</code>") // اسم المنتج كـ Monospace
-                
-                if (!productInfo.unit.isNullOrBlank()) {
-                    append(" (").append(productInfo.unit).append(")") // الوحدة بخط عادي خارج الكود
-                }
-                    append("\n") // سطر مستقل للسعر والخصم
-                if (!productInfo.salePrice.isNullOrBlank()) {
-                append("ب ").append(productInfo.salePrice).append(" جنيه")
-                }
-                append(" بخصم ").append(discountPercent).append("%")
-            }
-            
-            deals.add(DealData(originalName = productInfo.name, dealText = dealText))
-            processed.add(productKey)
-            historyMap[productKey] = System.currentTimeMillis()
-            saveHistoryMap(prefs, historyMap)
-            addLog("✅ Rabbit: تمت إضافة عرض: $dealText")
-            
-            return true 
+        val productCard = findRabbitProductCard(current.node)
+        if (productCard == null) continue
+        
+        val cardRect = getRect(productCard)
+        val cardKey = "${cardRect.left}:${cardRect.top}:${cardRect.right}:${cardRect.bottom}"
+        if (!processedCards.add(cardKey)) continue
+        
+        val productInfo = extractRabbitProductInfo(productCard)
+        if (productInfo == null || productInfo.name.length < 3) continue
+        
+        // --- بداية كود فحص الكلمات السلبية المخصص لرابيت ---
+        if (containsNegativeKeyword(productInfo.name, prefs, "RABBIT")) {
+            addLog("🚫 Rabbit: تم تجاهل العرض لاحتوائه على كلمة سلبية -> ${productInfo.name}")
+            continue
         }
-        return false
+        // --- نهاية كود فحص الكلمات السلبية ---
+
+        val productKey = normalizeRabbitText(productInfo.name).lowercase(java.util.Locale.ROOT)
+        
+        // التعديل: تم نقل اللوج بعد هذه السطور حتى لا يتم تسجيل المنتج إلا إذا كان جديداً ولم يتم تسجيله من قبل
+        if (processed.contains(productKey)) continue
+        val lastSent = historyMap[productKey]
+        if (lastSent != null && System.currentTimeMillis() - lastSent < cooldownMillis) continue
+        
+        val attempts = rabbitAddAttempts[productKey] ?: 0
+        if (attempts >= 3) continue
+
+        // مكان اللوج الصحيح: يظهر مرة واحدة فقط لكل منتج جديد يكتشفه البوت
+        addLog("🔎 يحقق شرط الخصم ($discountPercent%): ${productInfo.name} - السعر: ${productInfo.salePrice ?: "غير متاح"}")
+
+        var plusClicked = false
+        
+        val addButton = findRabbitAddButton(productCard)
+        if (addButton != null) {
+            plusClicked = clickNodeCenter(addButton)
+        }
+
+        if (!plusClicked) {
+            rabbitAddAttempts[productKey] = attempts + 1
+            addLog("⚠️ Rabbit: تعذر النقر الآمن لـ ${productInfo.name} (محاولة ${attempts + 1}/3)")
+            continue
+        }
+        
+        rabbitAddAttempts.remove(productKey)
+        
+        // تحويل الرموز لاسم المنتج الأساسي فقط لتجنب أخطاء تليجرام عند استخدام وضع HTML
+        val safeName = productInfo.name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        // بناء النص النهائي بحيث يقتصر الـ Monospace على الاسم فقط
+        val dealText = buildString {
+            append("<code>").append(safeName).append("</code>") // اسم المنتج كـ Monospace
+            
+            if (!productInfo.unit.isNullOrBlank()) {
+                append(" (").append(productInfo.unit).append(")") // الوحدة بخط عادي خارج الكود
+            }
+            append("\n") // سطر مستقل للسعر والخصم
+            if (!productInfo.salePrice.isNullOrBlank()) {
+                append("ب ").append(productInfo.salePrice).append(" جنيه")
+            }
+            append(" بخصم ").append(discountPercent).append("%")
+        }
+        
+        deals.add(DealData(originalName = productInfo.name, dealText = dealText))
+        processed.add(productKey)
+        historyMap[productKey] = System.currentTimeMillis()
+        saveHistoryMap(prefs, historyMap)
+        addLog("✅ Rabbit: تمت إضافة عرض: $dealText")
+        
+        return true 
     }
+    return false
+}
     
     // ==========================================
     // منطق تطبيق بريدفاست القديم (Breadfast Automation)
@@ -2378,50 +2412,57 @@ Thread.sleep(6000)
     }
 
     private fun processDealNode(
-        p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, 
-        deals: MutableList<DealData>, processed: MutableSet<String>, priceNode: AccessibilityNodeInfo,
-        historyMap: MutableMap<String, Long>, cooldownMillis: Long, prefs: SharedPreferences
-    ) {
-        val oldPrice = maxOf(p1, p2)
-        val newPrice = minOf(p1, p2)
+    p1: Double, p2: Double, nameIdx: Int, uniqueNodes: List<NodeData>, minDiscount: Int, 
+    deals: MutableList<DealData>, processed: MutableSet<String>, priceNode: AccessibilityNodeInfo,
+    historyMap: MutableMap<String, Long>, cooldownMillis: Long, prefs: SharedPreferences
+) {
+    val oldPrice = maxOf(p1, p2)
+    val newPrice = minOf(p1, p2)
 
-        if (oldPrice > 0 && oldPrice != newPrice) {
-            val discountPercent = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
-            if (discountPercent >= minDiscount) {
-                val productName = if (nameIdx < uniqueNodes.size && !uniqueNodes[nameIdx].text.matches(Regex("^[0-9\\s.]+$"))) 
-                    uniqueNodes[nameIdx].text else "منتج مميز"
+    if (oldPrice > 0 && oldPrice != newPrice) {
+        val discountPercent = (((oldPrice - newPrice) / oldPrice) * 100).toInt()
+        if (discountPercent >= minDiscount) {
+            val productName = if (nameIdx < uniqueNodes.size && !uniqueNodes[nameIdx].text.matches(Regex("^[0-9\\s.]+$"))) 
+                uniqueNodes[nameIdx].text else "منتج مميز"
 
-                if (processed.contains(productName)) return
-                val lastSentTime = historyMap[productName]
-                if (lastSentTime != null && (System.currentTimeMillis() - lastSentTime) < cooldownMillis) return 
-                
-                addLog("🔎 Breadfast يحقق شرط الخصم ($discountPercent%): $productName | القديم=$oldPrice | الجديد=$newPrice")
+            // --- بداية كود فحص الكلمات السلبية المخصص لبريدفاست ---
+            if (containsNegativeKeyword(productName, prefs, "BREADFAST")) {
+                addLog("🚫 Breadfast: تم تجاهل العرض لاحتوائه على كلمة سلبية -> $productName")
+                return
+            }
+            // --- نهاية كود فحص الكلمات السلبية ---
 
-                try {
-                    val productCard = findProductCardBreadfast(priceNode)
-                    val clicked = productCard != null && forceClickAddButtonBreadfast(productCard)
+            if (processed.contains(productName)) return
+            val lastSentTime = historyMap[productName]
+            if (lastSentTime != null && (System.currentTimeMillis() - lastSentTime) < cooldownMillis) return 
+            
+            addLog("🔎 Breadfast يحقق شرط الخصم ($discountPercent%): $productName | القديم=$oldPrice | الجديد=$newPrice")
 
-                    if (clicked) {
-                        addedItemsCount++
-                        addLog("✅ Breadfast: تم الضغط على إضافة للسلة: $productName")
-                    } else {
-                        addLog("⚠️ Breadfast: تعذر الضغط على إضافة للسلة: $productName")
-                    }
+            try {
+                val productCard = findProductCardBreadfast(priceNode)
+                val clicked = productCard != null && forceClickAddButtonBreadfast(productCard)
 
-                    var cleanName = productName.replace("\n", " ").trim()
-                    cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
-                    deals.add(DealData(originalName = productName, dealText = "$cleanName ب $newPrice جنيه بخصم $discountPercent%"))
-                    processed.add(productName)
-                    historyMap[productName] = System.currentTimeMillis()
-                    saveHistoryMap(prefs, historyMap)
-
-                    addLog("✅ Breadfast: تمت إضافة العرض إلى القائمة: $cleanName ب $newPrice جنيه بخصم $discountPercent%")
-                } catch (e: Exception) {
-                    addLog("❌ Breadfast processDealNode error: ${e.javaClass.simpleName}: ${e.message}")
+                if (clicked) {
+                    addedItemsCount++
+                    addLog("✅ Breadfast: تم الضغط على إضافة للسلة: $productName")
+                } else {
+                    addLog("⚠️ Breadfast: تعذر الضغط على إضافة للسلة: $productName")
                 }
+
+                var cleanName = productName.replace("\n", " ").trim()
+                cleanName = cleanName.replace(Regex("\\s+"), " ").trim()
+                deals.add(DealData(originalName = productName, dealText = "$cleanName ب $newPrice جنيه بخصم $discountPercent%"))
+                processed.add(productName)
+                historyMap[productName] = System.currentTimeMillis()
+                saveHistoryMap(prefs, historyMap)
+
+                addLog("✅ Breadfast: تمت إضافة العرض إلى القائمة: $cleanName ب $newPrice جنيه بخصم $discountPercent%")
+            } catch (e: Exception) {
+                addLog("❌ Breadfast processDealNode error: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
     }
+}
 
     private fun findProductCardBreadfast(priceNode: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         var current: AccessibilityNodeInfo? = priceNode.parent
